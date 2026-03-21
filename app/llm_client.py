@@ -1,0 +1,52 @@
+"""Minimal OpenAI-compatible chat client."""
+
+from __future__ import annotations
+
+from typing import Any
+
+from openai import OpenAI
+
+from app.config import AppConfig
+
+
+class LlmClient:
+    """Thin wrapper around an OpenAI-compatible chat completion client."""
+
+    def __init__(self, config:AppConfig):
+        self._config = config
+        self._client = OpenAI(
+            api_key = config.OPENAI,
+            base_url = config.openai_base_url
+        )
+
+    def create_tool_completion(
+        self,
+        messages:list[dict[str, Any]],
+        tools:list[dict[str, Any]]
+    ) -> Any:
+        """Request the next model turn with function tools enabled.
+
+        Args:
+            messages: Chat messages to send to the model.
+            tools: OpenAI-compatible function tool definitions.
+
+        Returns:
+            Any: Assistant message returned by the OpenAI SDK.
+        """
+
+        print(
+            f"[LlmClient] Sending tool completion with {len(messages)} messages and "
+            f"{len(tools)} tools"
+        )
+        response = self._client.chat.completions.create(
+            model = self._config.openai_model,
+            messages = messages,
+            tools = tools,
+            parallel_tool_calls = False
+        )
+        message = response.choices[0].message
+        print(
+            f"[LlmClient] Received assistant message. "
+            f"tool_calls={len(message.tool_calls or [])}, content={message.content!r}"
+        )
+        return message

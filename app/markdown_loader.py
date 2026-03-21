@@ -1,0 +1,70 @@
+"""Utilities for loading markdown-defined workflows and prompts."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+
+
+@dataclass(frozen = True)
+class MarkdownDocument:
+    """Representation of a markdown file that the agent can read.
+
+    Args:
+        name: Logical document name.
+        path: Absolute path to the markdown file.
+        content: File contents.
+
+    Returns:
+        MarkdownDocument: Loaded markdown document metadata and text.
+    """
+
+    name:str
+    path:Path
+    content:str
+
+
+def load_markdown_documents(directory:Path) -> list[MarkdownDocument]:
+    """Load all markdown files from a directory.
+
+    Args:
+        directory: Directory that may contain markdown files.
+
+    Returns:
+        list[MarkdownDocument]: Sorted list of loaded markdown documents.
+    """
+
+    if not directory.exists():
+        print(f"[MarkdownLoader] Directory missing: {directory}")
+        return []
+
+    documents:list[MarkdownDocument] = []
+    for path in sorted(directory.glob("*.md")):
+        print(f"[MarkdownLoader] Loading markdown file: {path}")
+        documents.append(
+            MarkdownDocument(
+                name = path.stem,
+                path = path,
+                content = path.read_text(encoding = "utf-8")
+            )
+        )
+
+    return documents
+
+
+def load_optional_markdown(path:Path) -> str:
+    """Load a markdown file if it exists.
+
+    Args:
+        path: File path to load.
+
+    Returns:
+        str: File contents or an empty string when missing.
+    """
+
+    if not path.exists():
+        print(f"[MarkdownLoader] Optional markdown missing: {path}")
+        return ""
+
+    print(f"[MarkdownLoader] Loading optional markdown file: {path}")
+    return path.read_text(encoding = "utf-8")

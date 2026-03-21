@@ -1,0 +1,62 @@
+"""Shared tool primitives."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any, Callable
+
+
+@dataclass(frozen = True)
+class ToolExecutionResult:
+    """Return value for tool executions.
+
+    Args:
+        output: Human-readable output to feed back into the agent loop.
+        is_terminal: Whether this tool ends the workflow.
+
+    Returns:
+        ToolExecutionResult: Tool execution metadata.
+    """
+
+    output:str
+    is_terminal:bool = False
+
+
+@dataclass(frozen = True)
+class ToolDefinition:
+    """Definition of a callable tool and its runtime handler.
+
+    Args:
+        name: Tool name exposed to the model.
+        description: Human-readable tool description.
+        parameters: Strict JSON Schema for tool arguments.
+        handler: Concrete implementation for the tool.
+
+    Returns:
+        ToolDefinition: Metadata and implementation pair.
+    """
+
+    name:str
+    description:str
+    parameters:dict[str, Any]
+    handler:Callable[[dict[str, Any]], ToolExecutionResult]
+
+    def to_openai_tool(self) -> dict[str, Any]:
+        """Convert the tool definition into an OpenAI API schema.
+
+        Args:
+            None
+
+        Returns:
+            dict[str, Any]: OpenAI-compatible function tool payload.
+        """
+
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": self.parameters,
+                "strict": True
+            }
+        }
