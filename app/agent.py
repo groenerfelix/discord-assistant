@@ -42,18 +42,26 @@ class MarkdownAgent:
         self._llm_client = LlmClient(config = config)
         self._tools = ToolRegistry(project_root = config.project_root)
 
-    def run_dm_workflow(self, user_message:str) -> AgentResponse:
+    def run_dm_workflow(
+        self,
+        user_message:str,
+        recent_channel_history:str = ""
+    ) -> AgentResponse:
         """Run the DM workflow loop for a single incoming user message.
 
         Args:
             user_message: The raw text from the Discord direct message.
+            recent_channel_history: Optional formatted transcript from the same Discord channel.
 
         Returns:
             AgentResponse: Final assistant response and usage metadata.
         """
 
         print("[Agent] Starting DM workflow")
-        messages = self._build_initial_messages(user_message = user_message)
+        messages = self._build_initial_messages(
+            user_message = user_message,
+            recent_channel_history = recent_channel_history
+        )
         openai_tools = self._tools.get_openai_tools()
 
         for step_index in range(1, self._config.max_agent_steps + 1):
@@ -151,21 +159,56 @@ class MarkdownAgent:
             steps_used = self._config.max_agent_steps
         )
 
-    def _build_initial_messages(self, user_message:str) -> list[dict[str, Any]]:
+    def _build_initial_messages(
+        self,
+        user_message:str,
+        recent_channel_history:str = ""
+    ) -> list[dict[str, Any]]:
         """Construct the initial prompt context for the agent.
 
         Args:
             user_message: Raw DM content from the user.
+            recent_channel_history: Optional formatted transcript from the same Discord channel.
 
         Returns:
             list[dict[str, Any]]: Initial chat messages for the model.
         """
 
         system_prompt = self._build_system_prompt()
+        user_content = self._build_user_message(
+            user_message = user_message,
+            recent_channel_history = recent_channel_history
+        )
         return [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_message}
+            {"role": "user", "content": user_content}
         ]
+
+    def _build_user_message(
+        self,
+        user_message:str,
+        recent_channel_history:str = ""
+    ) -> str:
+        """Build the initial user payload for the model.
+
+        Args:
+            user_message: Raw DM content from the user.
+            recent_channel_history: Optional formatted transcript from the same Discord channel.
+
+        Returns:
+            str: User message with optional bounded channel context.
+        """
+
+        if not recent_channel_history:
+            return user_message
+
+        return (
+            "## Recent Channel History\n"
+            f"{recent_channel_history}\n\n"
+            "---\n\n"
+            "## Latest User Message\n"
+            f"{user_message}"
+        )
 
     def _build_system_prompt(self) -> str:
         """Assemble the system prompt from markdown assets.
@@ -191,7 +234,12 @@ class MarkdownAgent:
         if general_instructions:
             system_prompt += f"{general_instructions}\n\n"
 
-        # TODO: add memories here after we added the memory skill
+        memories_prompt = load_optional_markdown(path = project_root / "prompts" / "memories.md")
+        memories_content = memories_prompt or "_No stored memories yet._"
+        system_prompt += (
+            "## memories\n"
+            f"{memories_content}\n\n"
+        )
 
         workflow_files = self._format_available_files(directory = project_root / "workflows")
         data_files = self._format_available_files(directory = project_root / "data")

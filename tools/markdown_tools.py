@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import tempfile
 from typing import Any
 
 from tools.base import ToolDefinition, ToolExecutionResult
@@ -10,6 +11,8 @@ from tools.base import ToolDefinition, ToolExecutionResult
 
 WORKFLOWS_DIRECTORY_NAME = "workflows"
 DATA_DIRECTORY_NAME = "data"
+PROMPTS_DIRECTORY_NAME = "prompts"
+MEMORIES_FILENAME = "memories.md"
 FILENAME_PARAMETERS:dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -36,6 +39,21 @@ WRITE_PARAMETERS:dict[str, Any] = {
     "required": ["filename", "content"],
     "additionalProperties": False
 }
+MEMORY_PARAMETERS:dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "memory": {
+            "type": "string",
+            "description": (
+                "A truly meaningful new fact about the user or their preferences. "
+                "Use this only for durable information that is likely to help in future conversations "
+                "and is not already present in memories."
+            )
+        }
+    },
+    "required": ["memory"],
+    "additionalProperties": False
+}
 
 
 def build_markdown_tool_definitions(project_root:Path) -> list[ToolDefinition]:
@@ -50,6 +68,7 @@ def build_markdown_tool_definitions(project_root:Path) -> list[ToolDefinition]:
 
     workflows_directory = project_root / WORKFLOWS_DIRECTORY_NAME
     data_directory = project_root / DATA_DIRECTORY_NAME
+    memories_path = project_root / PROMPTS_DIRECTORY_NAME / MEMORIES_FILENAME
     definitions:list[ToolDefinition] = []
 
     def read_workflow(arguments:dict[str, Any]) -> ToolExecutionResult:
@@ -125,6 +144,27 @@ def build_markdown_tool_definitions(project_root:Path) -> list[ToolDefinition]:
             description = "Write the full contents of a data markdown file in the data directory by filename.",
             parameters = WRITE_PARAMETERS,
             handler = write_data
+        )
+    )
+
+    def add_memory(arguments:dict[str, Any]) -> ToolExecutionResult:
+        memory = str(arguments["memory"])
+        return append_memory(
+            memory = memory,
+            memories_path = memories_path,
+            project_root = project_root
+        )
+
+    definitions.append(
+        ToolDefinition(
+            name = "add_memory",
+            description = (
+                "Store a truly meaningful new memory about the user or their preferences. "
+                "This appends one bullet to prompts/memories.md. "
+                "Use it only for durable facts that will likely matter later, and do not use it if the memory is already present."
+            ),
+            parameters = MEMORY_PARAMETERS,
+            handler = add_memory
         )
     )
 
@@ -266,3 +306,115 @@ def write_markdown(
 
     file_path.write_text(content, encoding = "utf-8")
     return ToolExecutionResult(output = f"Wrote markdown file: {relative_path}")
+
+
+def normalize_memory(memory:str) -> str:
+    """Normalize a memory entry into plain bullet text.
+
+    Args:
+        memory: Raw memory string supplied by the model.
+
+    Returns:
+        str: Clean memory text without the bullet prefix.
+    """
+
+    normalized_memory = memory.strip()
+    if normalized_memory.startswith("- "):
+        normalized_memory = normalized_memory[2:].strip()
+    elif normalized_memory == "-":
+        normalized_memory = ""
+
+    if not normalized_memory:
+        raise ValueError("Memory must not be empty")
+
+    return normalized_memory
+
+
+def parse_memory_entries(content:str) -> list[str]:
+    """Extract normalized memory bullet texts from the memories file.
+
+    Args:
+        content: Existing memories markdown content.
+
+    Returns:
+        list[str]: Normalized bullet texts.
+    """
+
+    entries:list[str] = []
+    for line in content.splitlines():
+        stripped_line = line.strip()
+        if stripped_line.startswith("- "):
+            entries.append(normalize_memory(memory = stripped_line))
+
+    return entries
+
+
+def atomic_write_text(file_path:Path, content:str) -> None:
+    """Atomically replace a text file on disk.
+
+    Args:
+        file_path: File path to replace.
+        content: Full text content to write.
+
+    Returns:
+        None
+    """
+
+    print(f"[MarkdownTools] Performing atomic write: {file_path}")
+    file_path.parent.mkdir(parents = True, exist_ok = True)
+
+    with tempfile.NamedTemporaryFile(
+        mode = "w",
+        encoding = "utf-8",
+        dir = str(file_path.parent),
+        delete = False
+    ) as temporary_file:
+        temporary_file.write(content)
+        temporary_path = Path(temporary_file.name)
+
+    temporary_path.replace(file_path)
+
+
+def append_memory(
+    memory:str,
+    memories_path:Path,
+    project_root:Path
+) -> ToolExecutionResult:
+    """Append a new memory bullet to the dedicated memories file.
+
+    Args:
+        memory: Raw memory string supplied by the model.
+        memories_path: Absolute path to prompts/memories.md.
+        project_root: Root directory of the project workspace.
+
+    Returns:
+        ToolExecutionResult: Outcome of the memory append operation.
+    """
+
+    relative_path = format_relative_path(
+        file_path = memories_path,
+        project_root = project_root
+    )
+    normalized_memory = normalize_memory(memory = memory)
+    print(f"[MarkdownTools] Adding memory to {relative_path}: {normalized_memory}")
+
+    existing_content = ""
+    if memories_path.exists():
+        existing_content = memories_path.read_text(encoding = "utf-8")
+
+    existing_entries = parse_memory_entries(content = existing_content)
+    if normalized_memory in existing_entries:
+        print(f"[MarkdownTools] Memory already present in {relative_path}")
+        return ToolExecutionResult(output = f"Memory already present in {relative_path}: - {normalized_memory}")
+
+    appended_entry = f"- {normalized_memory}"
+    if not existing_content:
+        updated_content = appended_entry
+    else:
+        updated_content = f"{existing_content.rstrip()}\n{appended_entry}"
+
+    atomic_write_text(
+        file_path = memories_path,
+        content = updated_content
+    )
+    return ToolExecutionResult(output = f"Added memory to {relative_path}: {appended_entry}")
