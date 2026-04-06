@@ -24,7 +24,7 @@ MAIL_API_BASE_URL = "https://mail.zoho.com/api"
 PAGE_SIZE = 200
 FETCH_RECENT_EMAILS_PARAMETERS:dict[str, Any] = {
     "type": "object",
-    # "properties": {},
+    "properties": {},
     # "required": [],
     "additionalProperties": False
 }

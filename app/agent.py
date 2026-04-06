@@ -718,8 +718,30 @@ class MarkdownAgent:
             dict[str, Any]: Message payload suitable for a follow-up API call.
         """
 
-        payload = message.model_dump()
-        print("[Agent] Appending assistant message to conversation state")
+        tool_calls = []
+        for tool_call in message.tool_calls or []:
+            tool_calls.append(
+                {
+                    "id": tool_call.id,
+                    "type": "function",
+                    "function": {
+                        "name": tool_call.function.name,
+                        "arguments": tool_call.function.arguments
+                    }
+                }
+            )
+
+        payload = {
+            "role": "assistant",
+            "content": message.content
+        }
+        if tool_calls:
+            payload["tool_calls"] = tool_calls
+
+        print(
+            "[Agent] Appending sanitized assistant message to conversation state "
+            f"tool_calls={len(tool_calls)}, has_content={bool(message.content)}"
+        )
         return payload
 
     def _write_interaction_log(
@@ -776,5 +798,6 @@ class MarkdownAgent:
 
         log_path.write_text("\n".join(log_lines), encoding = "utf-8")
         print(f"[Agent] Wrote interaction log to {log_path}")
+
 
 

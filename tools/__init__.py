@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from app.llm_client import LlmClient
 from tools.base import ToolDefinition
 from tools.email_tools import build_email_tool_definitions
 from tools.markdown_tools import build_markdown_tool_definitions
