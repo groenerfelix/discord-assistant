@@ -1,5 +1,7 @@
 from datetime import datetime
+from html import unescape
 import pytz
+import re
 
 def get_datetime_string(timezone:str = "UTC", date_format:str = "%Y-%m-%d %H:%M:%S") -> str:
     """
@@ -27,6 +29,23 @@ def get_datetime_string(timezone:str = "UTC", date_format:str = "%Y-%m-%d %H:%M:
     time_string = now.strftime(date_format)
     print(f"[util] Generated datetime string for timezone {timezone}: {time_string}")
     return time_string
+
+def extract_text_from_html_mail_content(html_content:str) -> str:
+    """
+    Extracts readable text from HTML mail content by removing tags and decoding entities.
+
+    Args:
+        html_content: Raw HTML content from an email body
+
+    Returns:
+        Plain text content with HTML tags removed
+    """
+    print("[util] Extracting text from HTML mail content")
+    text_content = re.sub(r"<[^<>]*>", "", html_content)
+    text_content = unescape(text_content)
+    text_content = re.sub(r"\s+", " ", text_content).strip()
+    print(f"[util] Extracted text content with length {len(text_content)}")
+    return text_content
 
 if __name__ == "__main__":
     # Example usage

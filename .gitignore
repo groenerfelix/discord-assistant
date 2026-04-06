@@ -25,7 +25,7 @@ dist-ssr
 
 
 
-*/__pycache__
+__pycache__
 *.sh
 .env
 *.ps1
@@ -33,6 +33,7 @@ dist-ssr
 venv
 /data/*
 /workflows/*
+testing
 
 persona.md
 memories.md
