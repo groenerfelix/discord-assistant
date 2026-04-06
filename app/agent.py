@@ -1,4 +1,4 @@
-"""Core markdown-driven agent loop."""
+﻿"""Core markdown-driven agent loop."""
 
 from __future__ import annotations
 
@@ -57,7 +57,7 @@ class QueuedDiscordMessage:
         QueuedDiscordMessage: Immutable queued message record.
     """
 
-    message_id:int
+    message_id:int | None
     channel_id:int
     author_id:int
     content:str
@@ -524,6 +524,13 @@ class MarkdownAgent:
             f"message_id={queued_message.message_id} channel_id={queued_message.channel_id} status={status}"
         )
 
+        if queued_message.message_id is None:
+            print(
+                "[Agent] Skipping Discord reaction update for synthetic workflow trigger "
+                f"channel_id={queued_message.channel_id} status={status}"
+            )
+            return
+
         if self._discord_client is None:
             print("[Agent] Discord client bridge is unavailable for reaction update")
             return
@@ -798,6 +805,8 @@ class MarkdownAgent:
 
         log_path.write_text("\n".join(log_lines), encoding = "utf-8")
         print(f"[Agent] Wrote interaction log to {log_path}")
+
+
 
 
 

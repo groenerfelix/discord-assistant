@@ -3,7 +3,7 @@ from html import unescape
 import pytz
 import re
 
-def get_datetime_string(timezone:str = "UTC", date_format:str = "%Y-%m-%d %H:%M:%S") -> str:
+def get_datetime_string(timezone:str = "UTC", date_format:str = "%A, %Y-%m-%d %H:%M:%S") -> str:
     """
     Returns the current date and time as a formatted string.
     
@@ -52,3 +52,4 @@ if __name__ == "__main__":
     print(get_datetime_string())  # Default UTC
     print(get_datetime_string(timezone="US/Arizona"))
     print(get_datetime_string(timezone="Asia/Tokyo", date_format="%Y-%m-%d %H:%M:%S %Z%z"))
+    print(get_datetime_string(date_format="%A, %Y-%m-%d %H:%M:%S"))  # Day of week included

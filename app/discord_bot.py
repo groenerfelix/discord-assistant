@@ -1,4 +1,4 @@
-"""Discord integration for the markdown-driven assistant."""
+﻿"""Discord integration for the markdown-driven assistant."""
 
 from __future__ import annotations
 
@@ -37,12 +37,23 @@ class AssistantDiscordClient(discord.Client):
         super().__init__(intents = intents)
         self._agent = agent
         self._allowed_user_id = int(os.getenv("DISCORD_ADMIN_ID", "0"))
+        self._admin_dm_channel_id = int(os.getenv("DISCORD_ADMIN_DM_CHANNEL_ID", "0"))
         self._worker_started = False
         self._bot_loop:asyncio.AbstractEventLoop | None = None
 
     @tasks.loop(time = time(hour = 6, tzinfo = timezone(timedelta(hours = -7))))
     async def daily_routine(self) -> None:
-        pass
+        print("[DiscordBot] Kicking off morning routine")
+
+        if self._admin_dm_channel_id == 0:
+            print("[DiscordBot] Skipping morning routine because DISCORD_ADMIN_DM_CHANNEL_ID is not configured")
+            return
+
+        self._enqueue_synthetic_workflow(
+            channel_id = self._admin_dm_channel_id,
+            content = "Start my morning routine workflow"
+        )
+
 
     async def on_ready(self) -> None:
         self._bot_loop = asyncio.get_running_loop()
@@ -52,6 +63,10 @@ class AssistantDiscordClient(discord.Client):
             self._agent.start_worker(discord_client = self)
             self._worker_started = True
             print("[DiscordBot] Agent worker started")
+
+        if not self.daily_routine.is_running():
+            self.daily_routine.start()
+            print("[DiscordBot] Daily routine loop started")
 
     async def on_message(self, message:discord.Message) -> None:
         if message.author == self.user:
@@ -86,10 +101,36 @@ class AssistantDiscordClient(discord.Client):
             )
         )
 
+    def _enqueue_synthetic_workflow(self, channel_id:int, content:str) -> None:
+        """Queue a synthetic workflow trigger without a backing Discord message.
+
+        Args:
+            channel_id: Discord channel id that should receive workflow replies.
+            content: Synthetic user message that kicks off the workflow.
+
+        Returns:
+            None
+        """
+
+        print(
+            "[DiscordBot] Enqueuing synthetic workflow trigger "
+            f"channel_id={channel_id} content={content}"
+        )
+        self._agent.enqueue_message(
+            QueuedDiscordMessage(
+                message_id = None,
+                channel_id = channel_id,
+                author_id = self._allowed_user_id,
+                content = content,
+                created_at = datetime.now(timezone.utc),
+                recent_channel_history = ""
+            )
+        )
+
     def update_message_status_threadsafe(
         self,
         channel_id:int,
-        message_id:int,
+        message_id:int | None,
         status:str
     ) -> None:
         """Schedule a message reaction status update from a worker thread.
@@ -152,7 +193,7 @@ class AssistantDiscordClient(discord.Client):
     async def update_message_status(
         self,
         channel_id:int,
-        message_id:int,
+        message_id:int | None,
         status:str
     ) -> None:
         """Replace the bot's known status reactions on one message.
@@ -168,6 +209,13 @@ class AssistantDiscordClient(discord.Client):
 
         if status not in STATUS_REACTIONS:
             raise ValueError(f"Unknown Discord message status: {status}")
+
+        if message_id is None:
+            print(
+                "[DiscordBot] Skipping reaction update because no Discord message id was provided "
+                f"channel_id={channel_id} status={status}"
+            )
+            return
 
         message = await self._fetch_message(
             channel_id = channel_id,
@@ -416,3 +464,4 @@ class AssistantDiscordClient(discord.Client):
             return f"{minutes}m"
 
         return "0m"
+
