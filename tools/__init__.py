@@ -1,4 +1,4 @@
-﻿"""Tool definition entrypoint."""
+"""Tool definition entrypoint."""
 
 from __future__ import annotations
 
@@ -26,6 +26,6 @@ def build_tool_definitions(project_root:Path, llm_client:LlmClient) -> list[Tool
     return [
         *build_markdown_tool_definitions(project_root = project_root),
         *build_email_tool_definitions(),
-        # *build_messaging_tool_definitions(), # NOTE: disabled because every text response is already sent to the channel
+        *build_messaging_tool_definitions(),
         *build_web_search_tool_definitions(llm_client = llm_client)
     ]

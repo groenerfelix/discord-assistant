@@ -12,6 +12,7 @@ class ToolExecutionResult:
 
     Args:
         output: Human-readable output to feed back into the agent loop.
+        outbound_message: Optional Discord-visible message to send immediately.
         is_terminal: Whether this tool ends the workflow.
 
     Returns:
@@ -19,6 +20,7 @@ class ToolExecutionResult:
     """
 
     output:str
+    outbound_message:str | None = None
     is_terminal:bool = False
 
 

@@ -1,23 +1,35 @@
 """Discord integration for the markdown-driven assistant."""
 
 from __future__ import annotations
+
+import asyncio
 import os
 from datetime import datetime, timedelta, timezone, time
 
 import discord
 from discord.ext import tasks
 
-from app.agent import MarkdownAgent
+from app.agent import MarkdownAgent, QueuedDiscordMessage
 
 
 MAX_HISTORY_HOURS = 50
 MAX_HISTORY_MESSAGES = 10
 MAX_HISTORY_TOKENS = 10000
 HISTORY_FETCH_LIMIT = 50
+QUEUED_REACTION = "\N{HOURGLASS WITH FLOWING SAND}"
+THINKING_REACTION = "\N{THINKING FACE}"
+SUCCESS_REACTION = "\N{WHITE HEAVY CHECK MARK}"
+ERROR_REACTION = "\N{CROSS MARK}"
+STATUS_REACTIONS = {
+    "queued": QUEUED_REACTION,
+    "thinking": THINKING_REACTION,
+    "success": SUCCESS_REACTION,
+    "error": ERROR_REACTION
+}
 
 
 class AssistantDiscordClient(discord.Client):
-    """Discord client that runs the markdown agent on direct messages."""
+    """Discord client that queues incoming messages for the markdown agent."""
 
     def __init__(self, agent:MarkdownAgent):
         intents = discord.Intents.default()
@@ -25,13 +37,21 @@ class AssistantDiscordClient(discord.Client):
         super().__init__(intents = intents)
         self._agent = agent
         self._allowed_user_id = int(os.getenv("DISCORD_ADMIN_ID", "0"))
+        self._worker_started = False
+        self._bot_loop:asyncio.AbstractEventLoop | None = None
 
     @tasks.loop(time = time(hour = 6, tzinfo = timezone(timedelta(hours = -7))))
     async def daily_routine(self) -> None:
         pass
 
     async def on_ready(self) -> None:
+        self._bot_loop = asyncio.get_running_loop()
         print(f"[DiscordBot] Logged in as {self.user}")
+
+        if not self._worker_started:
+            self._agent.start_worker(discord_client = self)
+            self._worker_started = True
+            print("[DiscordBot] Agent worker started")
 
     async def on_message(self, message:discord.Message) -> None:
         if message.author == self.user:
@@ -46,20 +66,234 @@ class AssistantDiscordClient(discord.Client):
 
         content = message.content.strip()
         if not content:
-            # await message.channel.send("Please send a text request so I can start a workflow.")
             return
 
         print(f"[DiscordBot] Received DM from {message.author}: {content}")
         recent_channel_history = await self._build_recent_channel_history(message = message)
-        await message.add_reaction("\N{THINKING FACE}")
-        response = self._agent.run_dm_workflow(
-            user_message = content,
-            recent_channel_history = recent_channel_history
+        await self.update_message_status(
+            channel_id = message.channel.id,
+            message_id = message.id,
+            status = "queued"
         )
-        await message.remove_reaction("\N{THINKING FACE}", self.user)
-        await message.add_reaction("\N{WHITE HEAVY CHECK MARK}")
-        print(f"[DiscordBot] Sending DM response after {response.steps_used} steps")
-        await message.channel.send(response.message)
+        self._agent.enqueue_message(
+            QueuedDiscordMessage(
+                message_id = message.id,
+                channel_id = message.channel.id,
+                author_id = message.author.id,
+                content = content,
+                created_at = message.created_at,
+                recent_channel_history = recent_channel_history
+            )
+        )
+
+    def update_message_status_threadsafe(
+        self,
+        channel_id:int,
+        message_id:int,
+        status:str
+    ) -> None:
+        """Schedule a message reaction status update from a worker thread.
+
+        Args:
+            channel_id: Discord channel id.
+            message_id: Discord message id.
+            status: Target status name.
+
+        Returns:
+            None
+        """
+
+        if self._bot_loop is None:
+            print("[DiscordBot] Cannot update reactions before the bot loop is ready")
+            return
+
+        future = asyncio.run_coroutine_threadsafe(
+            self.update_message_status(
+                channel_id = channel_id,
+                message_id = message_id,
+                status = status
+            ),
+            self._bot_loop
+        )
+
+        try:
+            future.result(timeout = 30)
+        except Exception as exc:
+            print(f"[DiscordBot] Failed to update message status: {exc}")
+
+    def send_channel_message_threadsafe(self, channel_id:int, content:str) -> None:
+        """Schedule a channel send from a worker thread.
+
+        Args:
+            channel_id: Discord channel id.
+            content: User-facing message content.
+
+        Returns:
+            None
+        """
+
+        if self._bot_loop is None:
+            print("[DiscordBot] Cannot send messages before the bot loop is ready")
+            return
+
+        future = asyncio.run_coroutine_threadsafe(
+            self.send_channel_message(
+                channel_id = channel_id,
+                content = content
+            ),
+            self._bot_loop
+        )
+
+        try:
+            future.result(timeout = 30)
+        except Exception as exc:
+            print(f"[DiscordBot] Failed to send channel message: {exc}")
+
+    async def update_message_status(
+        self,
+        channel_id:int,
+        message_id:int,
+        status:str
+    ) -> None:
+        """Replace the bot's known status reactions on one message.
+
+        Args:
+            channel_id: Discord channel id.
+            message_id: Discord message id.
+            status: Target status name.
+
+        Returns:
+            None
+        """
+
+        if status not in STATUS_REACTIONS:
+            raise ValueError(f"Unknown Discord message status: {status}")
+
+        message = await self._fetch_message(
+            channel_id = channel_id,
+            message_id = message_id
+        )
+        if message is None or self.user is None:
+            return
+
+        print(
+            "[DiscordBot] Updating reactions "
+            f"message_id={message_id} channel_id={channel_id} status={status}"
+        )
+
+        for reaction in STATUS_REACTIONS.values():
+            if reaction == STATUS_REACTIONS[status]:
+                continue
+            await self._safe_remove_reaction(
+                message = message,
+                reaction = reaction
+            )
+
+        await self._safe_add_reaction(
+            message = message,
+            reaction = STATUS_REACTIONS[status]
+        )
+
+    async def send_channel_message(self, channel_id:int, content:str) -> None:
+        """Send a Discord message to a channel by id.
+
+        Args:
+            channel_id: Discord channel id.
+            content: User-facing message content.
+
+        Returns:
+            None
+        """
+
+        channel = await self._fetch_channel(channel_id = channel_id)
+        if channel is None:
+            return
+
+        print(f"[DiscordBot] Sending channel message channel_id={channel_id}")
+
+        try:
+            await channel.send(content)
+        except discord.HTTPException as exc:
+            print(f"[DiscordBot] Failed to send channel message: {exc}")
+
+    async def _fetch_channel(self, channel_id:int):
+        """Fetch a Discord channel from cache or API.
+
+        Args:
+            channel_id: Discord channel id.
+
+        Returns:
+            Any: Discord channel object or None.
+        """
+
+        channel = self.get_channel(channel_id)
+        if channel is not None:
+            return channel
+
+        try:
+            channel = await self.fetch_channel(channel_id)
+        except discord.HTTPException as exc:
+            print(f"[DiscordBot] Failed to fetch channel {channel_id}: {exc}")
+            return None
+
+        return channel
+
+    async def _fetch_message(self, channel_id:int, message_id:int) -> discord.Message | None:
+        """Fetch a Discord message by channel and message id.
+
+        Args:
+            channel_id: Discord channel id.
+            message_id: Discord message id.
+
+        Returns:
+            discord.Message | None: Message object when available.
+        """
+
+        channel = await self._fetch_channel(channel_id = channel_id)
+        if channel is None or not hasattr(channel, "fetch_message"):
+            print(f"[DiscordBot] Channel {channel_id} cannot fetch messages")
+            return None
+
+        try:
+            return await channel.fetch_message(message_id)
+        except discord.HTTPException as exc:
+            print(f"[DiscordBot] Failed to fetch message {message_id}: {exc}")
+            return None
+
+    async def _safe_add_reaction(self, message:discord.Message, reaction:str) -> None:
+        """Add a reaction while swallowing Discord transport errors.
+
+        Args:
+            message: Target Discord message.
+            reaction: Emoji string to add.
+
+        Returns:
+            None
+        """
+
+        try:
+            await message.add_reaction(reaction)
+        except discord.HTTPException as exc:
+            print(f"[DiscordBot] Failed to add reaction {reaction}: {exc}")
+
+    async def _safe_remove_reaction(self, message:discord.Message, reaction:str) -> None:
+        """Remove one bot-owned reaction while swallowing Discord transport errors.
+
+        Args:
+            message: Target Discord message.
+            reaction: Emoji string to remove.
+
+        Returns:
+            None
+        """
+
+        if self.user is None:
+            return
+
+        try:
+            await message.remove_reaction(reaction, self.user)
+        except discord.HTTPException:
+            pass
 
     async def _build_recent_channel_history(self, message:discord.Message) -> str:
         """Collect recent same-channel messages to prepend to the agent input.
