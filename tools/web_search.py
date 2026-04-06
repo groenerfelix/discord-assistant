@@ -1,13 +1,10 @@
-"""Web search tool implementation."""
+﻿"""Web search tool implementation."""
 
 from __future__ import annotations
 
-import os
 from typing import Any
-from urllib.parse import urlparse
 
-import requests
-
+from app.llm_client import LlmClient
 from tools.base import ToolDefinition, ToolExecutionResult
 
 
@@ -24,11 +21,11 @@ WEB_SEARCH_PARAMETERS:dict[str, Any] = {
 }
 
 
-def build_web_search_tool_definitions() -> list[ToolDefinition]:
+def build_web_search_tool_definitions(llm_client:LlmClient) -> list[ToolDefinition]:
     """Build web-search tool definitions.
 
     Args:
-        None
+        llm_client: Shared LLM client used to call the OpenAI Responses API.
 
     Returns:
         list[ToolDefinition]: Web-search tool definitions.
@@ -38,12 +35,20 @@ def build_web_search_tool_definitions() -> list[ToolDefinition]:
 
     def web_search(arguments:dict[str, Any]) -> ToolExecutionResult:
         query = str(arguments["query"])
-        return ToolExecutionResult(output = perform_web_search(query = query))
+        return ToolExecutionResult(
+            output = perform_web_search(
+                query = query,
+                llm_client = llm_client
+            )
+        )
 
     definitions.append(
         ToolDefinition(
             name = "web_search",
-            description = "Search the web and return a concise summary of the top results.",
+            description = (
+                "Search the web with a natural-language query that includes all relevant "
+                "context and motivation, then return the response."
+            ),
             parameters = WEB_SEARCH_PARAMETERS,
             handler = web_search
         )
@@ -52,49 +57,53 @@ def build_web_search_tool_definitions() -> list[ToolDefinition]:
     return definitions
 
 
-def perform_web_search(query:str) -> str:
-    """Search the web and summarize the top results.
+def perform_web_search(query:str, llm_client:LlmClient) -> str:
+    """Search the web with the Responses API and return the answer with sources.
 
     Args:
-        query: Search query string.
+        query: Natural-language search query string.
+        llm_client: Shared LLM client used to call the OpenAI Responses API.
 
     Returns:
-        str: Summary of the top search results or an error message.
+        str: Search response text or an error message.
     """
 
     print(f"[WebSearch] Searching the web for: {query}")
 
-
     try:
-        response = requests.get(
-            url = "https://www.googleapis.com/customsearch/v1",
-            params = {
-                "key": os.getenv("GOOGLE_SEARCH"),
-                "cx": "3555a0babf4b94fb6",
-                "q": query,
-                "lr": "lang_en",
-                "num": 3,
-                "safe": "active"
-            },
-            timeout = 10
-        )
-        response.raise_for_status()
-        results = response.json()
+        response = llm_client.create_web_search_response(query = query)
     except Exception as e:
         print(f"[WebSearch] Error during web search: {e}")
         return f"Sorry, I couldn't perform the web search at this time. Pass this error message to the user: {e}"
 
-    items = results.get("items", [])
-    if not items:
-        print("[WebSearch] No search results returned")
+    response_text = (response.output_text or "").strip()
+    if not response_text:
+        print("[WebSearch] No response text returned")
         return f"No web results found for: {query}"
 
-    search_results = f"## Web Search\nYou searched for {query} and found the following:\n\n"
-    for item in items:
-        link = str(item.get("link", ""))
-        source = urlparse(link).netloc or "unknown source"
-        title = str(item.get("title", "Untitled result"))
-        snippet = str(item.get("snippet", "No snippet available."))
-        search_results += f"- {snippet} (Source: {title} from {source})\n\n"
+    source_urls:list[str] = []
+    for output_item in response.output:
+        if output_item.type != "web_search_call":
+            continue
+
+        action = getattr(output_item, "action", None)
+        sources = getattr(action, "sources", None)
+        if not sources:
+            continue
+
+        for source in sources:
+            source_url = getattr(source, "url", "")
+            if source_url and source_url not in source_urls:
+                source_urls.append(source_url)
+
+    search_results = (
+        "## Web Search Results\n"
+        # f"Query: {query}\n\n"
+        f"{response_text}"
+    )
+    if source_urls:
+        search_results += "\n\nSources:\n"
+        for source_url in source_urls:
+            search_results += f"- {source_url}\n"
 
     return search_results

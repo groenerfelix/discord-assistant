@@ -1,9 +1,10 @@
-"""Tool definition entrypoint."""
+﻿"""Tool definition entrypoint."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
+from app.llm_client import LlmClient
 from tools.base import ToolDefinition
 from tools.email_tools import build_email_tool_definitions
 from tools.markdown_tools import build_markdown_tool_definitions
@@ -11,11 +12,12 @@ from tools.messaging_tools import build_messaging_tool_definitions
 from tools.web_search import build_web_search_tool_definitions
 
 
-def build_tool_definitions(project_root:Path) -> list[ToolDefinition]:
+def build_tool_definitions(project_root:Path, llm_client:LlmClient) -> list[ToolDefinition]:
     """Build the full list of callable tools.
 
     Args:
         project_root: Root directory of the project workspace.
+        llm_client: Shared LLM client used by tool implementations that call the model.
 
     Returns:
         list[ToolDefinition]: Tool definitions available to the agent.
@@ -25,5 +27,5 @@ def build_tool_definitions(project_root:Path) -> list[ToolDefinition]:
         *build_markdown_tool_definitions(project_root = project_root),
         *build_email_tool_definitions(),
         # *build_messaging_tool_definitions(), # NOTE: disabled because every text response is already sent to the channel
-        # *build_web_search_tool_definitions() # NOTE: disabled because Google stopped supporting AI-free search. Consider switching to OpenAI or Gemini
+        *build_web_search_tool_definitions(llm_client = llm_client)
     ]

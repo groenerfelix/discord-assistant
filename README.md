@@ -15,7 +15,7 @@ This repository contains a minimal prototype for a self-evolving assistant that 
 Set these environment variables before running:
 
 - `DISCORD` bot token
-- `DISCORD_ID` single, whitelisted user id
+- `DISCORD_ADMIN_ID` single, whitelisted user id
 - `OPENAI` api key
 - `OPENAI_MODEL` optional, defaults to `gpt-5-mini`
 - `OPENAI_BASE_URL` optional, for OpenAI-compatible providers

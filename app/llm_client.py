@@ -1,4 +1,4 @@
-"""Minimal OpenAI-compatible chat client."""
+﻿"""Minimal OpenAI-compatible chat client."""
 
 from __future__ import annotations
 
@@ -50,3 +50,32 @@ class LlmClient:
             f"tool_calls={len(message.tool_calls or [])}, content={message.content!r}"
         )
         return message
+
+    def create_web_search_response(self, query:str) -> Any:
+        """Request a Responses API web-search completion for a natural-language query.
+
+        Args:
+            query: Natural-language search prompt with full context and motivation.
+
+        Returns:
+            Any: Responses API payload returned by the OpenAI SDK.
+        """
+
+        print(f"[LlmClient] Sending web search response request for query: {query}")
+        response = self._client.responses.create(
+            model = self._config.openai_model,
+            input = query,
+            include = ["web_search_call.action.sources"],
+            tools = [
+                {
+                    "type": "web_search",
+                    "search_context_size": "medium"
+                }
+            ]
+        )
+        print(
+            f"[LlmClient] Received web search response. "
+            f"output_items={len(response.output)}, output_text={response.output_text!r}"
+        )
+        return response
+

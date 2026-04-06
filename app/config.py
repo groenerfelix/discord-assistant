@@ -50,7 +50,7 @@ def load_config() -> AppConfig:
 
     return AppConfig(
         project_root = project_root,
-        discord_token = os.getenv("DISCORD", ""),
+        discord_token = os.getenv("DISCORD_2", ""),
         OPENAI = os.getenv("OPENAI", ""),
         openai_model = os.getenv("LLM_MODEL", "gpt-5-mini"),
         openai_base_url = os.getenv("LLM_API_BASE_URL", None),

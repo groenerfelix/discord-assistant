@@ -1,4 +1,4 @@
-"""Core markdown-driven agent loop."""
+﻿"""Core markdown-driven agent loop."""
 
 from __future__ import annotations
 
@@ -40,7 +40,10 @@ class MarkdownAgent:
     def __init__(self, config:AppConfig):
         self._config = config
         self._llm_client = LlmClient(config = config)
-        self._tools = ToolRegistry(project_root = config.project_root)
+        self._tools = ToolRegistry(
+            project_root = config.project_root,
+            llm_client = self._llm_client
+        )
 
     def run_dm_workflow(
         self,
@@ -341,3 +344,5 @@ class MarkdownAgent:
 
         log_path.write_text("\n".join(log_lines), encoding = "utf-8")
         print(f"[Agent] Wrote interaction log to {log_path}")
+
+

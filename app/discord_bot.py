@@ -24,7 +24,7 @@ class AssistantDiscordClient(discord.Client):
         intents.message_content = True
         super().__init__(intents = intents)
         self._agent = agent
-        self._allowed_user_id = int(os.getenv("DISCORD_ID", "0"))
+        self._allowed_user_id = int(os.getenv("DISCORD_ADMIN_ID", "0"))
 
     @tasks.loop(time = time(hour = 6, tzinfo = timezone(timedelta(hours = -7))))
     async def daily_routine(self) -> None:
