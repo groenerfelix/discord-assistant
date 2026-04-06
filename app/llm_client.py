@@ -1,4 +1,4 @@
-﻿"""Minimal OpenAI-compatible chat client."""
+"""Minimal OpenAI-compatible chat client."""
 
 from __future__ import annotations
 
@@ -6,17 +6,18 @@ from typing import Any
 
 from openai import OpenAI
 
-from app.config import AppConfig
+from app.config import LlmClientConfig
 
 
 class LlmClient:
     """Thin wrapper around an OpenAI-compatible chat completion client."""
 
-    def __init__(self, config:AppConfig):
+    def __init__(self, config:LlmClientConfig, name:str):
         self._config = config
+        self._name = name
         self._client = OpenAI(
-            api_key = config.OPENAI,
-            base_url = config.openai_base_url
+            api_key = config.api_key,
+            base_url = config.base_url
         )
 
     def create_tool_completion(
@@ -35,18 +36,18 @@ class LlmClient:
         """
 
         print(
-            f"[LlmClient] Sending tool completion with {len(messages)} messages and "
+            f"[LlmClient:{self._name}] Sending tool completion with {len(messages)} messages and "
             f"{len(tools)} tools"
         )
         response = self._client.chat.completions.create(
-            model = self._config.openai_model,
+            model = self._config.model,
             messages = messages,
             tools = tools,
             parallel_tool_calls = False
         )
         message = response.choices[0].message
         print(
-            f"[LlmClient] Received assistant message. "
+            f"[LlmClient:{self._name}] Received assistant message. "
             f"tool_calls={len(message.tool_calls or [])}, content={message.content!r}"
         )
         return message
@@ -61,9 +62,9 @@ class LlmClient:
             Any: Responses API payload returned by the OpenAI SDK.
         """
 
-        print(f"[LlmClient] Sending web search response request for query: {query}")
+        print(f"[LlmClient:{self._name}] Sending web search response request for query: {query}")
         response = self._client.responses.create(
-            model = self._config.openai_model,
+            model = self._config.model,
             input = query,
             include = ["web_search_call.action.sources"],
             tools = [
@@ -74,8 +75,7 @@ class LlmClient:
             ]
         )
         print(
-            f"[LlmClient] Received web search response. "
+            f"[LlmClient:{self._name}] Received web search response. "
             f"output_items={len(response.output)}, output_text={response.output_text!r}"
         )
         return response
-

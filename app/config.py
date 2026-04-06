@@ -13,15 +13,32 @@ from pathlib import Path
 
 
 @dataclass(frozen = True)
+class LlmClientConfig:
+    """Container for one LLM client configuration.
+
+    Args:
+        api_key: API key used for requests.
+        model: Model name used for requests.
+        base_url: Optional base URL for OpenAI-compatible providers.
+
+    Returns:
+        LlmClientConfig: Immutable LLM client configuration.
+    """
+
+    api_key:str
+    model:str
+    base_url:str | None
+
+
+@dataclass(frozen = True)
 class AppConfig:
     """Container for runtime configuration values.
 
     Args:
         project_root: Root directory of the project.
         discord_token: Bot token for Discord.
-        OPENAI: API key for the configured LLM provider.
-        openai_model: Model name for the chat completion API.
-        openai_base_url: Optional base URL for OpenAI-compatible providers.
+        agent_llm: Core agent LLM configuration loaded from environment variables.
+        openai_api_key: OpenAI API key reserved for OpenAI-native tools.
         max_agent_steps: Maximum number of tool iterations per workflow run.
 
     Returns:
@@ -30,9 +47,7 @@ class AppConfig:
 
     project_root:Path
     discord_token:str
-    OPENAI:str
-    openai_model:str
-    openai_base_url:str | None
+    agent_llm:LlmClientConfig
     max_agent_steps:int
 
 
@@ -50,9 +65,12 @@ def load_config() -> AppConfig:
 
     return AppConfig(
         project_root = project_root,
-        discord_token = os.getenv("DISCORD_2", ""),
-        OPENAI = os.getenv("OPENAI", ""),
-        openai_model = os.getenv("LLM_MODEL", "gpt-5-mini"),
-        openai_base_url = os.getenv("LLM_API_BASE_URL", None),
+        discord_token = os.getenv("DISCORD_2", os.getenv("DISCORD", "")),
+        agent_llm = LlmClientConfig(
+            api_key = os.getenv("LLM_API_KEY", os.getenv("OPENAI", "")),
+            model = os.getenv("LLM_MODEL", "gpt-5-mini"),
+            base_url = os.getenv("LLM_API_BASE_URL", None)
+        ),
         max_agent_steps = int(os.getenv("AGENT_MAX_STEPS", "8"))
     )
+

@@ -24,8 +24,8 @@ MAIL_API_BASE_URL = "https://mail.zoho.com/api"
 PAGE_SIZE = 200
 FETCH_RECENT_EMAILS_PARAMETERS:dict[str, Any] = {
     "type": "object",
-    "properties": {},
-    "required": [],
+    # "properties": {},
+    # "required": [],
     "additionalProperties": False
 }
 
@@ -161,8 +161,7 @@ def build_email_tool_definitions() -> list[ToolDefinition]:
         ToolDefinition(
             name = "fetch_recent_emails",
             description = (
-                "Fetch recent Zoho emails from the configured folder, filtered by the optional "
-                "ZOHO_SENDER_WHITELIST, and return sender plus cleaned plain-text content."
+                "Fetch recent emails and return a list of sender plus cleaned plain-text content."
             ),
             parameters = FETCH_RECENT_EMAILS_PARAMETERS,
             handler = fetch_recent_emails

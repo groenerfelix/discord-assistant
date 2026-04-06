@@ -4,8 +4,19 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.llm_client import LlmClient
 from tools.base import ToolDefinition, ToolExecutionResult
+
+from app.llm_client import LlmClient, LlmClientConfig
+import os
+
+LLM_SEARCH_CLIENT = LlmClient(
+    config = LlmClientConfig(
+        api_key = os.getenv("OPENAI", ""),
+        model = "gpt-5-nano",
+        base_url = None
+    ),
+    name = "web_search"
+)
 
 
 WEB_SEARCH_PARAMETERS:dict[str, Any] = {
@@ -21,11 +32,11 @@ WEB_SEARCH_PARAMETERS:dict[str, Any] = {
 }
 
 
-def build_web_search_tool_definitions(llm_client:LlmClient) -> list[ToolDefinition]:
+def build_web_search_tool_definitions() -> list[ToolDefinition]:
     """Build web-search tool definitions.
 
     Args:
-        llm_client: Shared LLM client used to call the OpenAI Responses API.
+        llm_client: Dedicated OpenAI client used to call the Responses API.
 
     Returns:
         list[ToolDefinition]: Web-search tool definitions.
@@ -36,10 +47,7 @@ def build_web_search_tool_definitions(llm_client:LlmClient) -> list[ToolDefiniti
     def web_search(arguments:dict[str, Any]) -> ToolExecutionResult:
         query = str(arguments["query"])
         return ToolExecutionResult(
-            output = perform_web_search(
-                query = query,
-                llm_client = llm_client
-            )
+            output = perform_web_search(query = query)
         )
 
     definitions.append(
@@ -57,12 +65,11 @@ def build_web_search_tool_definitions(llm_client:LlmClient) -> list[ToolDefiniti
     return definitions
 
 
-def perform_web_search(query:str, llm_client:LlmClient) -> str:
+def perform_web_search(query:str) -> str:
     """Search the web with the Responses API and return the answer with sources.
 
     Args:
         query: Natural-language search query string.
-        llm_client: Shared LLM client used to call the OpenAI Responses API.
 
     Returns:
         str: Search response text or an error message.
@@ -71,7 +78,7 @@ def perform_web_search(query:str, llm_client:LlmClient) -> str:
     print(f"[WebSearch] Searching the web for: {query}")
 
     try:
-        response = llm_client.create_web_search_response(query = query)
+        response = LLM_SEARCH_CLIENT.create_web_search_response(query = query)
     except Exception as e:
         print(f"[WebSearch] Error during web search: {e}")
         return f"Sorry, I couldn't perform the web search at this time. Pass this error message to the user: {e}"
@@ -98,7 +105,6 @@ def perform_web_search(query:str, llm_client:LlmClient) -> str:
 
     search_results = (
         "## Web Search Results\n"
-        # f"Query: {query}\n\n"
         f"{response_text}"
     )
     if source_urls:

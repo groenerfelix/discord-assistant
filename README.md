@@ -16,9 +16,10 @@ Set these environment variables before running:
 
 - `DISCORD` bot token
 - `DISCORD_ADMIN_ID` single, whitelisted user id
-- `OPENAI` api key
-- `OPENAI_MODEL` optional, defaults to `gpt-5-mini`
-- `OPENAI_BASE_URL` optional, for OpenAI-compatible providers
+- `OPENAI` OpenAI API key used by the web search tool
+- `LLM_API_KEY` optional core agent API key, falls back to `OPENAI`
+- `LLM_MODEL` optional core agent model, defaults to `gpt-5-mini`
+- `LLM_API_BASE_URL` optional base URL for the core agent's OpenAI-compatible provider
 - `AGENT_MAX_STEPS` optional, defaults to `5`
 
 ## Run

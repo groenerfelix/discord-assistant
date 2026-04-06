@@ -1,4 +1,4 @@
-﻿"""Central registry for callable agent tools."""
+"""Central registry for callable agent tools."""
 
 from __future__ import annotations
 
@@ -7,7 +7,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from app.llm_client import LlmClient
 from tools import build_tool_definitions
 from tools.base import ToolExecutionResult
 
@@ -33,13 +32,12 @@ class ExecutedToolCall:
 class ToolRegistry:
     """Registry of executable tools and their OpenAI schemas."""
 
-    def __init__(self, project_root:Path, llm_client:LlmClient):
+    def __init__(self, project_root:Path):
         self._project_root = project_root.resolve()
         self._definitions = {
             definition.name: definition
             for definition in build_tool_definitions(
-                project_root = self._project_root,
-                llm_client = llm_client
+                project_root = self._project_root
             )
         }
         print(f"[ToolRegistry] Registered tools: {', '.join(sorted(self._definitions))}")

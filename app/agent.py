@@ -11,7 +11,7 @@ from pathlib import Path
 import threading
 from typing import TYPE_CHECKING, Any
 
-from app.config import AppConfig
+from app.config import AppConfig, LlmClientConfig
 from app.llm_client import LlmClient
 from app.markdown_loader import load_optional_markdown
 from app.tool_registry import ToolRegistry
@@ -113,10 +113,12 @@ class MarkdownAgent:
 
     def __init__(self, config:AppConfig):
         self._config = config
-        self._llm_client = LlmClient(config = config)
+        self.llm_agent = LlmClient(
+            config = config.agent_llm,
+            name = "agent"
+        )
         self._tools = ToolRegistry(
-            project_root = config.project_root,
-            llm_client = self._llm_client
+            project_root = config.project_root
         )
         self._discord_client:AssistantDiscordClient | None = None
         self._queue_condition = threading.Condition()
@@ -358,7 +360,7 @@ class MarkdownAgent:
         step_number = workflow_state.steps_used + 1
         print(f"[Agent] Running step {step_number}/{self._config.max_agent_steps}")
 
-        assistant_message = self._llm_client.create_tool_completion(
+        assistant_message = self.llm_agent.create_tool_completion(
             messages = workflow_state.messages,
             tools = self._tools.get_openai_tools()
         )
@@ -774,3 +776,5 @@ class MarkdownAgent:
 
         log_path.write_text("\n".join(log_lines), encoding = "utf-8")
         print(f"[Agent] Wrote interaction log to {log_path}")
+
+

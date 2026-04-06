@@ -180,6 +180,11 @@ class AssistantDiscordClient(discord.Client):
             "[DiscordBot] Updating reactions "
             f"message_id={message_id} channel_id={channel_id} status={status}"
         )
+        
+        await self._safe_add_reaction(
+            message = message,
+            reaction = STATUS_REACTIONS[status]
+        )
 
         for reaction in STATUS_REACTIONS.values():
             if reaction == STATUS_REACTIONS[status]:
@@ -189,10 +194,6 @@ class AssistantDiscordClient(discord.Client):
                 reaction = reaction
             )
 
-        await self._safe_add_reaction(
-            message = message,
-            reaction = STATUS_REACTIONS[status]
-        )
 
     async def send_channel_message(self, channel_id:int, content:str) -> None:
         """Send a Discord message to a channel by id.
