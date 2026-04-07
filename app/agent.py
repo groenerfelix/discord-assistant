@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
@@ -76,6 +76,7 @@ class ActiveWorkflowState:
         participating_messages: Messages already inserted into conversation state.
         sent_messages: User-facing Discord messages sent during the run.
         steps_used: Number of LLM turns consumed.
+        last_activity_at: Most recent workflow activity timestamp.
 
     Returns:
         ActiveWorkflowState: Current workflow runtime state.
@@ -86,6 +87,7 @@ class ActiveWorkflowState:
     participating_messages:list[QueuedDiscordMessage] = field(default_factory = list)
     sent_messages:list[str] = field(default_factory = list)
     steps_used:int = 0
+    last_activity_at:datetime = field(default_factory = lambda: datetime.now(timezone.utc))
 
 
 @dataclass(frozen = True)
@@ -228,7 +230,8 @@ class MarkdownAgent:
                         status = "error"
                     )
             finally:
-                self._active_workflow = None
+                if workflow_state is None:
+                    self._active_workflow = None
 
     def _wait_for_next_message(self) -> QueuedDiscordMessage:
         """Block until a queued message is available.
@@ -271,14 +274,46 @@ class MarkdownAgent:
             status = "thinking"
         )
 
+        previous_workflow = self._active_workflow
+        if previous_workflow is not None and not self._should_reset_messages_for_new_workflow(
+            previous_workflow = previous_workflow,
+            initial_message = initial_message
+        ):
+            print(
+                "[Agent] Reusing retained conversation history "
+                f"channel_id={initial_message.channel_id} previous_messages={len(previous_workflow.messages)}"
+            )
+            previous_workflow.channel_id = initial_message.channel_id
+            previous_workflow.participating_messages = [initial_message]
+            previous_workflow.sent_messages = []
+            previous_workflow.steps_used = 0
+            previous_workflow.last_activity_at = self._normalize_datetime(value = initial_message.created_at)
+            self._append_message_to_history(
+                workflow_state = previous_workflow,
+                message = {
+                    "role": "user",
+                    "content": self._build_follow_up_user_message(
+                        queued_message = initial_message
+                    )
+                }
+            )
+            return previous_workflow
+
         workflow_state = ActiveWorkflowState(
             channel_id = initial_message.channel_id,
-            messages = self._build_initial_messages(
-                user_message = initial_message.content,
-                recent_channel_history = initial_message.recent_channel_history
-            ),
-            participating_messages = [initial_message]
+            messages = [],
+            participating_messages = [initial_message],
+            last_activity_at = self._normalize_datetime(value = initial_message.created_at)
         )
+        initial_messages = self._build_initial_messages(
+            user_message = initial_message.content,
+            recent_channel_history = initial_message.recent_channel_history
+        )
+        for message in initial_messages:
+            self._append_message_to_history(
+                workflow_state = workflow_state,
+                message = message
+            )
         return workflow_state
 
     def _insert_pending_same_channel_messages(self, workflow_state:ActiveWorkflowState) -> None:
@@ -321,8 +356,10 @@ class MarkdownAgent:
                 status = "thinking"
             )
             workflow_state.participating_messages.append(queued_message)
-            workflow_state.messages.append(
-                {
+            workflow_state.last_activity_at = self._normalize_datetime(value = queued_message.created_at)
+            self._append_message_to_history(
+                workflow_state = workflow_state,
+                message = {
                     "role": "user",
                     "content": self._build_follow_up_user_message(
                         queued_message = queued_message
@@ -365,7 +402,11 @@ class MarkdownAgent:
             tools = self._tools.get_openai_tools()
         )
         workflow_state.steps_used += 1
-        workflow_state.messages.append(self._message_to_dict(message = assistant_message))
+        workflow_state.last_activity_at = datetime.now(timezone.utc)
+        self._append_message_to_history(
+            workflow_state = workflow_state,
+            message = self._message_to_dict(message = assistant_message)
+        )
 
         tool_calls = assistant_message.tool_calls or []
         if not tool_calls:
@@ -384,8 +425,9 @@ class MarkdownAgent:
                 )
 
             print("[Agent] Assistant returned neither tool call nor content")
-            workflow_state.messages.append(
-                {
+            self._append_message_to_history(
+                workflow_state = workflow_state,
+                message = {
                     "role": "user",
                     "content": "You must either call a tool or provide a final response."
                 }
@@ -401,8 +443,9 @@ class MarkdownAgent:
             )
         except Exception as exc:
             print(f"[Agent] Tool execution error: {exc}")
-            workflow_state.messages.append(
-                {
+            self._append_message_to_history(
+                workflow_state = workflow_state,
+                message = {
                     "role": "tool",
                     "tool_call_id": tool_call.id,
                     "content": f"Tool error: {exc}"
@@ -421,8 +464,9 @@ class MarkdownAgent:
             )
             workflow_state.sent_messages.append(executed_call.result.outbound_message)
 
-        workflow_state.messages.append(
-            {
+        self._append_message_to_history(
+            workflow_state = workflow_state,
+            message = {
                 "role": "tool",
                 "tool_call_id": tool_call.id,
                 "content": executed_call.result.output
@@ -475,6 +519,9 @@ class MarkdownAgent:
                 status = "success"
             )
 
+        workflow_state.last_activity_at = datetime.now(timezone.utc)
+        self._active_workflow = workflow_state
+
     def _finish_workflow_error(
         self,
         workflow_state:ActiveWorkflowState,
@@ -507,6 +554,9 @@ class MarkdownAgent:
                 queued_message = queued_message,
                 status = "error"
             )
+
+        workflow_state.last_activity_at = datetime.now(timezone.utc)
+        self._active_workflow = None
 
     def _mark_message_status(self, queued_message:QueuedDiscordMessage, status:str) -> None:
         """Update the Discord reaction state for one queued message.
@@ -608,6 +658,83 @@ class MarkdownAgent:
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_content}
         ]
+
+    def _should_reset_messages_for_new_workflow(
+        self,
+        previous_workflow:ActiveWorkflowState,
+        initial_message:QueuedDiscordMessage
+    ) -> bool:
+        """Determine whether a new workflow must start with fresh history.
+
+        Args:
+            previous_workflow: Retained state from the previous completed workflow.
+            initial_message: New queued message starting the next workflow.
+
+        Returns:
+            bool: True when retained history should be discarded.
+        """
+
+        if previous_workflow.channel_id != initial_message.channel_id:
+            print(
+                "[Agent] Resetting retained history due to channel change "
+                f"previous_channel_id={previous_workflow.channel_id} new_channel_id={initial_message.channel_id}"
+            )
+            return True
+
+        elapsed = self._normalize_datetime(value = initial_message.created_at) - previous_workflow.last_activity_at
+        if elapsed > timedelta(minutes = 30):
+            print(
+                "[Agent] Resetting retained history due to inactivity "
+                f"elapsed_minutes={elapsed.total_seconds() / 60:.1f}"
+            )
+            return True
+
+        return False
+
+    def _normalize_datetime(self, value:datetime) -> datetime:
+        """Normalize a datetime value to a timezone-aware UTC timestamp.
+
+        Args:
+            value: Datetime to normalize.
+
+        Returns:
+            datetime: Timezone-aware UTC timestamp.
+        """
+
+        if value.tzinfo is None:
+            return value.replace(tzinfo = timezone.utc)
+        return value.astimezone(timezone.utc)
+
+    def _append_message_to_history(
+        self,
+        workflow_state:ActiveWorkflowState,
+        message:dict[str, Any]
+    ) -> None:
+        """Append one message and trim the oldest retained history entry if needed.
+
+        Args:
+            workflow_state: Workflow state whose conversation should be updated.
+            message: Chat message payload to append.
+
+        Returns:
+            None
+        """
+
+        workflow_state.messages.append(message)
+        max_history_messages = self._config.max_agent_steps
+        while len(workflow_state.messages) > max_history_messages:
+            removal_index = 0
+            if workflow_state.messages and workflow_state.messages[0].get("role") == "system":
+                removal_index = 1
+
+            if removal_index >= len(workflow_state.messages):
+                break
+
+            removed_message = workflow_state.messages.pop(removal_index)
+            print(
+                "[Agent] Trimmed oldest conversation history message "
+                f"role={removed_message.get('role', 'unknown')} max_messages={max_history_messages}"
+            )
 
     def _build_user_message(
         self,
@@ -805,6 +932,10 @@ class MarkdownAgent:
 
         log_path.write_text("\n".join(log_lines), encoding = "utf-8")
         print(f"[Agent] Wrote interaction log to {log_path}")
+
+
+
+
 
 
 
