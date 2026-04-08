@@ -41,10 +41,7 @@ def build_messaging_tool_definitions() -> list[ToolDefinition]:
         is_terminal = bool(arguments.get("is_terminal", True))
         print(f"[MessagingTools] Sending Discord message. is_terminal={is_terminal}")
         return ToolExecutionResult(
-            output = (
-                "Sent Discord message:\n\n"
-                f"{message}"
-            ),
+            output = "Successfully sent Discord message",
             outbound_message = message,
             is_terminal = is_terminal
         )

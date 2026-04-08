@@ -1,11 +1,12 @@
-"""Markdown-oriented tool implementations."""
+﻿"""Markdown-oriented tool implementations."""
 
 from __future__ import annotations
 
 from pathlib import Path
 import tempfile
-from typing import Any
+from typing import Any, Callable
 
+from app.discord_utils import DiscordChannelCategory
 from tools.base import ToolDefinition, ToolExecutionResult
 
 
@@ -13,6 +14,7 @@ WORKFLOWS_DIRECTORY_NAME = "workflows"
 DATA_DIRECTORY_NAME = "data"
 PROMPTS_DIRECTORY_NAME = "prompts"
 MEMORIES_FILENAME = "memories.md"
+MarkdownPublisher = Callable[[DiscordChannelCategory, str, str], None]
 FILENAME_PARAMETERS:dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -56,11 +58,15 @@ MEMORY_PARAMETERS:dict[str, Any] = {
 }
 
 
-def build_markdown_tool_definitions(project_root:Path) -> list[ToolDefinition]:
+def build_markdown_tool_definitions(
+    project_root:Path,
+    markdown_publisher:MarkdownPublisher | None = None
+) -> list[ToolDefinition]:
     """Build markdown-oriented tool definitions.
 
     Args:
         project_root: Root directory of the project workspace.
+        markdown_publisher: Optional callback that mirrors markdown writes into Discord.
 
     Returns:
         list[ToolDefinition]: Markdown tool definitions.
@@ -97,7 +103,9 @@ def build_markdown_tool_definitions(project_root:Path) -> list[ToolDefinition]:
             content = content,
             base_directory = workflows_directory,
             label = "workflow",
-            project_root = project_root
+            project_root = project_root,
+            markdown_publisher = markdown_publisher,
+            publication_category = DiscordChannelCategory.WORKFLOWS
         )
 
     definitions.append(
@@ -135,7 +143,9 @@ def build_markdown_tool_definitions(project_root:Path) -> list[ToolDefinition]:
             content = content,
             base_directory = data_directory,
             label = "data",
-            project_root = project_root
+            project_root = project_root,
+            markdown_publisher = markdown_publisher,
+            publication_category = DiscordChannelCategory.DATA
         )
 
     definitions.append(
@@ -152,7 +162,8 @@ def build_markdown_tool_definitions(project_root:Path) -> list[ToolDefinition]:
         return append_memory(
             memory = memory,
             memories_path = memories_path,
-            project_root = project_root
+            project_root = project_root,
+            markdown_publisher = markdown_publisher
         )
 
     definitions.append(
@@ -274,7 +285,10 @@ def write_markdown(
     content:str,
     base_directory:Path,
     label:str,
-    project_root:Path
+    project_root:Path,
+    markdown_publisher:MarkdownPublisher | None = None,
+    publication_category:DiscordChannelCategory | None = None,
+    publication_channel_name:str | None = None
 ) -> ToolExecutionResult:
     """Write a markdown file inside a constrained project directory.
 
@@ -284,6 +298,9 @@ def write_markdown(
         base_directory: Directory the file must live in.
         label: Human-readable directory label.
         project_root: Root directory of the project workspace.
+        markdown_publisher: Optional callback that mirrors markdown writes into Discord.
+        publication_category: Optional Discord category that should receive the full file contents.
+        publication_channel_name: Optional Discord channel override.
 
     Returns:
         ToolExecutionResult: Success message for the write.
@@ -304,7 +321,19 @@ def write_markdown(
     if file_path.parent != base_directory.resolve():
         raise ValueError(f"Nested folders are not allowed for {label} files: {filename}")
 
-    file_path.write_text(content, encoding = "utf-8")
+    atomic_write_text(
+        file_path = file_path,
+        content = content
+    )
+
+    if publication_category is not None:
+        publish_markdown_update(
+            category = publication_category,
+            channel_name = publication_channel_name or file_path.stem,
+            content = content,
+            markdown_publisher = markdown_publisher
+        )
+
     return ToolExecutionResult(output = f"Wrote markdown file: {relative_path}")
 
 
@@ -375,10 +404,47 @@ def atomic_write_text(file_path:Path, content:str) -> None:
     temporary_path.replace(file_path)
 
 
+def publish_markdown_update(
+    category:DiscordChannelCategory,
+    channel_name:str,
+    content:str,
+    markdown_publisher:MarkdownPublisher | None
+) -> None:
+    """Mirror one markdown update into Discord when a publisher is available.
+
+    Args:
+        category: Target Discord category.
+        channel_name: Target Discord channel name.
+        content: Discord message content to publish.
+        markdown_publisher: Optional publisher callback.
+
+    Returns:
+        None
+    """
+
+    if markdown_publisher is None:
+        print(
+            "[MarkdownTools] Skipping Discord publish because no publisher is configured "
+            f"category={category} channel_name={channel_name}"
+        )
+        return
+
+    print(
+        "[MarkdownTools] Publishing markdown update to Discord "
+        f"category={category} channel_name={channel_name}"
+    )
+    markdown_publisher(
+        category,
+        channel_name,
+        content
+    )
+
+
 def append_memory(
     memory:str,
     memories_path:Path,
-    project_root:Path
+    project_root:Path,
+    markdown_publisher:MarkdownPublisher | None = None
 ) -> ToolExecutionResult:
     """Append a new memory bullet to the dedicated memories file.
 
@@ -386,6 +452,7 @@ def append_memory(
         memory: Raw memory string supplied by the model.
         memories_path: Absolute path to prompts/memories.md.
         project_root: Root directory of the project workspace.
+        markdown_publisher: Optional callback that mirrors markdown writes into Discord.
 
     Returns:
         ToolExecutionResult: Outcome of the memory append operation.
@@ -417,4 +484,11 @@ def append_memory(
         file_path = memories_path,
         content = updated_content
     )
+    publish_markdown_update(
+        category = DiscordChannelCategory.OTHER,
+        channel_name = "memories",
+        content = appended_entry,
+        markdown_publisher = markdown_publisher
+    )
+
     return ToolExecutionResult(output = f"Added memory to {relative_path}: {appended_entry}")

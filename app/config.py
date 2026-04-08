@@ -37,6 +37,7 @@ class AppConfig:
     Args:
         project_root: Root directory of the project.
         discord_token: Bot token for Discord.
+        guild_id: Discord guild id used for server-side bot channels.
         agent_llm: Core agent LLM configuration loaded from environment variables.
         openai_api_key: OpenAI API key reserved for OpenAI-native tools.
         max_agent_steps: Maximum number of tool iterations per workflow run.
@@ -47,6 +48,7 @@ class AppConfig:
 
     project_root:Path
     discord_token:str
+    guild_id:int
     agent_llm:LlmClientConfig
     max_agent_steps:int
 
@@ -66,6 +68,7 @@ def load_config() -> AppConfig:
     return AppConfig(
         project_root = project_root,
         discord_token = os.getenv("DISCORD_2", os.getenv("DISCORD", "")),
+        guild_id = int(os.getenv("GUILD_ID", "0")),
         agent_llm = LlmClientConfig(
             api_key = os.getenv("LLM_API_KEY", os.getenv("OPENAI", "")),
             model = os.getenv("LLM_MODEL", "gpt-5-mini"),
@@ -73,4 +76,3 @@ def load_config() -> AppConfig:
         ),
         max_agent_steps = int(os.getenv("AGENT_MAX_STEPS", "8"))
     )
-

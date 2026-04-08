@@ -10,6 +10,8 @@ import discord
 from discord.ext import tasks
 
 from app.agent import MarkdownAgent, QueuedDiscordMessage
+from app.config import AppConfig
+from app.discord_utils import DiscordChannelCategory, DiscordMessageStatus
 
 
 MAX_HISTORY_HOURS = 50
@@ -20,24 +22,26 @@ QUEUED_REACTION = "\N{HOURGLASS WITH FLOWING SAND}"
 THINKING_REACTION = "\N{THINKING FACE}"
 SUCCESS_REACTION = "\N{WHITE HEAVY CHECK MARK}"
 ERROR_REACTION = "\N{CROSS MARK}"
-STATUS_REACTIONS = {
-    "queued": QUEUED_REACTION,
-    "thinking": THINKING_REACTION,
-    "success": SUCCESS_REACTION,
-    "error": ERROR_REACTION
+STATUS_REACTIONS:dict[DiscordMessageStatus, str] = {
+    DiscordMessageStatus.QUEUED: QUEUED_REACTION,
+    DiscordMessageStatus.THINKING: THINKING_REACTION,
+    DiscordMessageStatus.SUCCESS: SUCCESS_REACTION,
+    DiscordMessageStatus.ERROR: ERROR_REACTION
 }
 
 
 class AssistantDiscordClient(discord.Client):
     """Discord client that queues incoming messages for the markdown agent."""
 
-    def __init__(self, agent:MarkdownAgent):
+    def __init__(self, agent:MarkdownAgent, config:AppConfig):
         intents = discord.Intents.default()
         intents.message_content = True
         super().__init__(intents = intents)
         self._agent = agent
+        self._config = config
         self._allowed_user_id = int(os.getenv("DISCORD_ADMIN_ID", "0"))
         self._admin_dm_channel_id = int(os.getenv("DISCORD_ADMIN_DM_CHANNEL_ID", "0"))
+        self._logs_channel_id:int | None = None
         self._worker_started = False
         self._bot_loop:asyncio.AbstractEventLoop | None = None
 
@@ -58,6 +62,16 @@ class AssistantDiscordClient(discord.Client):
     async def on_ready(self) -> None:
         self._bot_loop = asyncio.get_running_loop()
         print(f"[DiscordBot] Logged in as {self.user}")
+
+        if self._logs_channel_id is None:
+            logs_channel = await self.get_or_create_guild_text_channel(
+                guild_id = self._config.guild_id,
+                category_name = DiscordChannelCategory.OTHER,
+                channel_name = "logs"
+            )
+            if logs_channel is not None:
+                self._logs_channel_id = logs_channel.id
+                print(f"[DiscordBot] Logs channel ready channel_id={self._logs_channel_id}")
 
         if not self._worker_started:
             self._agent.start_worker(discord_client = self)
@@ -88,7 +102,7 @@ class AssistantDiscordClient(discord.Client):
         await self.update_message_status(
             channel_id = message.channel.id,
             message_id = message.id,
-            status = "queued"
+            status = DiscordMessageStatus.QUEUED
         )
         self._agent.enqueue_message(
             QueuedDiscordMessage(
@@ -131,7 +145,7 @@ class AssistantDiscordClient(discord.Client):
         self,
         channel_id:int,
         message_id:int | None,
-        status:str
+        status:DiscordMessageStatus
     ) -> None:
         """Schedule a message reaction status update from a worker thread.
 
@@ -190,11 +204,73 @@ class AssistantDiscordClient(discord.Client):
         except Exception as exc:
             print(f"[DiscordBot] Failed to send channel message: {exc}")
 
+    def send_logs_message_threadsafe(self, content:str) -> None:
+        """Schedule a raw execution log send from a worker thread.
+
+        Args:
+            content: Raw execution text to mirror into the logs channel.
+
+        Returns:
+            None
+        """
+
+        if self._bot_loop is None:
+            print("[DiscordBot] Cannot send logs before the bot loop is ready")
+            return
+
+        future = asyncio.run_coroutine_threadsafe(
+            self.send_logs_message(content = content),
+            self._bot_loop
+        )
+
+        try:
+            future.result(timeout = 30)
+        except Exception as exc:
+            print(f"[DiscordBot] Failed to send logs message: {exc}")
+
+    def send_guild_channel_message_threadsafe(
+        self,
+        guild_id:int,
+        category_name:DiscordChannelCategory,
+        channel_name:str,
+        content:str
+    ) -> None:
+        """Schedule a guild channel send by category/name from a worker thread.
+
+        Args:
+            guild_id: Discord guild id that owns the target channel.
+            category_name: Target category name.
+            channel_name: Target text channel name.
+            content: User-facing message content.
+
+        Returns:
+            None
+        """
+
+        if self._bot_loop is None:
+            print("[DiscordBot] Cannot send guild channel messages before the bot loop is ready")
+            return
+
+        future = asyncio.run_coroutine_threadsafe(
+            self.send_guild_channel_message(
+                guild_id = guild_id,
+                category_name = category_name,
+                channel_name = channel_name,
+                content = content
+            ),
+            self._bot_loop
+        )
+
+        try:
+            future.result(timeout = 30)
+        except Exception as exc:
+            print(f"[DiscordBot] Failed to send guild channel message: {exc}")
+
     async def update_message_status(
         self,
         channel_id:int,
         message_id:int | None,
-        status:str
+        status:DiscordMessageStatus
     ) -> None:
         """Replace the bot's known status reactions on one message.
 
@@ -265,6 +341,26 @@ class AssistantDiscordClient(discord.Client):
         except discord.HTTPException as exc:
             print(f"[DiscordBot] Failed to send channel message: {exc}")
 
+    async def send_logs_message(self, content:str) -> None:
+        """Send raw execution text to the logs channel in fenced code blocks.
+
+        Args:
+            content: Raw execution text to mirror into the logs channel.
+
+        Returns:
+            None
+        """
+
+        if self._logs_channel_id is None:
+            print("[DiscordBot] Logs channel is unavailable")
+            return
+
+        for message_chunk in self._build_logs_messages(content = content):
+            await self.send_channel_message(
+                channel_id = self._logs_channel_id,
+                content = message_chunk
+            )
+
     async def _fetch_channel(self, channel_id:int):
         """Fetch a Discord channel from cache or API.
 
@@ -286,6 +382,244 @@ class AssistantDiscordClient(discord.Client):
             return None
 
         return channel
+
+    def _build_logs_messages(self, content:str) -> list[str]:
+        """Wrap raw log text into Discord-safe fenced code blocks.
+
+        Args:
+            content: Raw execution text to mirror into the logs channel.
+
+        Returns:
+            list[str]: One or more Discord-ready code block messages.
+        """
+
+        fence_prefix = "```json\n"
+        fence_suffix = "\n```"
+        max_content_length = 2000 - len(fence_prefix) - len(fence_suffix)
+
+        if max_content_length <= 0:
+            return [f"{fence_prefix}{content}{fence_suffix}"]
+
+        if not content:
+            return [f"{fence_prefix}{fence_suffix}"]
+
+        messages:list[str] = []
+        start_index = 0
+        while start_index < len(content):
+            end_index = min(start_index + max_content_length, len(content))
+            messages.append(f"{fence_prefix}{content[start_index:end_index]}{fence_suffix}")
+            start_index = end_index
+
+        return messages
+
+    async def send_guild_channel_message(
+        self,
+        guild_id:int,
+        category_name:DiscordChannelCategory,
+        channel_name:str,
+        content:str
+    ) -> None:
+        """Send a Discord message to a named guild text channel.
+
+        Args:
+            guild_id: Discord guild id that owns the target channel.
+            category_name: Target category name.
+            channel_name: Target text channel name.
+            content: User-facing message content.
+
+        Returns:
+            None
+        """
+
+        channel = await self.get_or_create_guild_text_channel(
+            guild_id = guild_id,
+            category_name = category_name,
+            channel_name = channel_name
+        )
+        if channel is None:
+            print(
+                "[DiscordBot] Guild channel is unavailable "
+                f"guild_id={guild_id} category_name={category_name} channel_name={channel_name}"
+            )
+            return
+
+        print(
+            "[DiscordBot] Sending guild channel message "
+            f"guild_id={guild_id} category_name={category_name} channel_name={channel_name} channel_id={channel.id}"
+        )
+        await self.send_channel_message(
+            channel_id = channel.id,
+            content = content
+        )
+
+    async def get_or_create_guild_text_channel(
+        self,
+        guild_id:int,
+        category_name:DiscordChannelCategory,
+        channel_name:str
+    ) -> discord.TextChannel | None:
+        """Find or create a text channel inside a supported Discord category.
+
+        Args:
+            guild_id: Discord guild id that should own the channel.
+            category_name: Target category enum.
+            channel_name: Target text channel name.
+
+        Returns:
+            discord.TextChannel | None: Existing or newly created text channel.
+        """
+
+        if guild_id == 0:
+            print(
+                "[DiscordBot] Skipping text channel lookup because GUILD_ID is not configured "
+                f"channel_name={channel_name}"
+            )
+            return None
+
+        guild = await self._fetch_guild(guild_id = guild_id)
+        if guild is None:
+            return None
+
+        guild_channels = await self._fetch_guild_channels(guild = guild)
+        if guild_channels is None:
+            return None
+
+        category_channel = await self._get_or_create_category_channel(
+            guild = guild,
+            guild_channels = guild_channels,
+            category_name = category_name
+        )
+        if category_channel is None:
+            return None
+
+        for guild_channel in guild_channels:
+            if (
+                isinstance(guild_channel, discord.TextChannel)
+                and guild_channel.name == channel_name
+                and guild_channel.category_id == category_channel.id
+            ):
+                print(
+                    "[DiscordBot] Found existing text channel "
+                    f"guild_id={guild_id} category_name={category_name} "
+                    f"channel_name={channel_name} channel_id={guild_channel.id}"
+                )
+                return guild_channel
+
+        print(
+            "[DiscordBot] Creating missing text channel "
+            f"guild_id={guild_id} category_name={category_name} channel_name={channel_name}"
+        )
+        try:
+            return await guild.create_text_channel(
+                channel_name,
+                category = category_channel,
+                reason = f"Auto-created by Discord assistant for {category_name}/{channel_name}"
+            )
+        except discord.Forbidden as exc:
+            print(
+                "[DiscordBot] Missing permission to create channel. "
+                f"The bot needs Manage Channels for {category_name}/{channel_name} in guild {guild_id}: {exc}"
+            )
+            return None
+        except discord.HTTPException as exc:
+            print(
+                "[DiscordBot] Failed to create channel "
+                f"{category_name}/{channel_name} in guild {guild_id}: {exc}"
+            )
+            return None
+
+    async def _fetch_guild(self, guild_id:int) -> discord.Guild | None:
+        """Fetch a Discord guild from cache or API.
+
+        Args:
+            guild_id: Discord guild id.
+
+        Returns:
+            discord.Guild | None: Guild object when available.
+        """
+
+        guild = self.get_guild(guild_id)
+        if guild is not None:
+            return guild
+
+        print(f"[DiscordBot] Guild {guild_id} was not found in cache, fetching from API")
+        try:
+            return await self.fetch_guild(guild_id)
+        except discord.HTTPException as exc:
+            print(f"[DiscordBot] Failed to fetch guild {guild_id}: {exc}")
+            return None
+
+    async def _fetch_guild_channels(
+        self,
+        guild:discord.Guild
+    ) -> list[discord.abc.GuildChannel] | None:
+        """Fetch the full channel list for a guild.
+
+        Args:
+            guild: Discord guild object.
+
+        Returns:
+            list[discord.abc.GuildChannel] | None: Guild channels when available.
+        """
+
+        try:
+            return await guild.fetch_channels()
+        except discord.Forbidden as exc:
+            print(
+                "[DiscordBot] Missing permission to fetch guild channels. "
+                f"The bot needs View Channels in guild {guild.id}: {exc}"
+            )
+            return None
+        except discord.HTTPException as exc:
+            print(f"[DiscordBot] Failed to fetch channels for guild {guild.id}: {exc}")
+            return None
+
+    async def _get_or_create_category_channel(
+        self,
+        guild:discord.Guild,
+        guild_channels:list[discord.abc.GuildChannel],
+        category_name:DiscordChannelCategory
+    ) -> discord.CategoryChannel | None:
+        """Find or create a supported category channel in a guild.
+
+        Args:
+            guild: Discord guild object.
+            guild_channels: Current guild channels.
+            category_name: Target category enum.
+
+        Returns:
+            discord.CategoryChannel | None: Existing or newly created category.
+        """
+
+        for guild_channel in guild_channels:
+            if isinstance(guild_channel, discord.CategoryChannel) and guild_channel.name == category_name.value:
+                print(
+                    "[DiscordBot] Found existing category "
+                    f"guild_id={guild.id} category_name={category_name} category_id={guild_channel.id}"
+                )
+                return guild_channel
+
+        print(
+            "[DiscordBot] Creating missing category "
+            f"guild_id={guild.id} category_name={category_name}"
+        )
+        try:
+            return await guild.create_category(
+                category_name.value,
+                reason = f"Auto-created by Discord assistant for {category_name}"
+            )
+        except discord.Forbidden as exc:
+            print(
+                "[DiscordBot] Missing permission to create category. "
+                f"The bot needs Manage Channels for {category_name} in guild {guild.id}: {exc}"
+            )
+            return None
+        except discord.HTTPException as exc:
+            print(
+                "[DiscordBot] Failed to create category "
+                f"{category_name} in guild {guild.id}: {exc}"
+            )
+            return None
 
     async def _fetch_message(self, channel_id:int, message_id:int) -> discord.Message | None:
         """Fetch a Discord message by channel and message id.
@@ -464,4 +798,15 @@ class AssistantDiscordClient(discord.Client):
             return f"{minutes}m"
 
         return "0m"
+
+
+
+
+
+
+
+
+
+
+
 

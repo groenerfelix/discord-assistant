@@ -28,12 +28,13 @@ def main():
         raise RuntimeError("LLM_API_KEY or OPENAI is required for the core agent")
 
     agent = MarkdownAgent(config = config)
-    client = AssistantDiscordClient(agent = agent)
+    client = AssistantDiscordClient(
+        agent = agent,
+        config = config
+    )
     print("[App] Starting Discord client")
     client.run(config.discord_token)
 
 
 if __name__ == "__main__":
     main()
-
-

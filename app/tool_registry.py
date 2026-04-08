@@ -1,12 +1,13 @@
-"""Central registry for callable agent tools."""
+﻿"""Central registry for callable agent tools."""
 
 from __future__ import annotations
 
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
+from app.discord_utils import DiscordChannelCategory
 from tools import build_tool_definitions
 from tools.base import ToolExecutionResult
 
@@ -32,12 +33,17 @@ class ExecutedToolCall:
 class ToolRegistry:
     """Registry of executable tools and their OpenAI schemas."""
 
-    def __init__(self, project_root:Path):
+    def __init__(
+        self,
+        project_root:Path,
+        markdown_publisher:Callable[[DiscordChannelCategory, str, str], None] | None = None
+    ):
         self._project_root = project_root.resolve()
         self._definitions = {
             definition.name: definition
             for definition in build_tool_definitions(
-                project_root = self._project_root
+                project_root = self._project_root,
+                markdown_publisher = markdown_publisher
             )
         }
         print(f"[ToolRegistry] Registered tools: {', '.join(sorted(self._definitions))}")

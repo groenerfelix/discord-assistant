@@ -15,6 +15,7 @@ This repository contains a minimal prototype for a self-evolving assistant that 
 Set these environment variables before running:
 
 - `DISCORD` bot token
+- `GUILD_ID` optional guild id used for server-side status/log channels
 - `DISCORD_ADMIN_ID` single, whitelisted user id
 - `OPENAI` OpenAI API key used by the web search tool
 - `LLM_API_KEY` optional core agent API key, falls back to `OPENAI`

@@ -12,6 +12,7 @@ import threading
 from typing import TYPE_CHECKING, Any
 
 from app.config import AppConfig, LlmClientConfig
+from app.discord_utils import DiscordChannelCategory, DiscordMessageStatus
 from app.llm_client import LlmClient
 from app.markdown_loader import load_optional_markdown
 from app.tool_registry import ToolRegistry
@@ -120,13 +121,46 @@ class MarkdownAgent:
             name = "agent"
         )
         self._tools = ToolRegistry(
-            project_root = config.project_root
+            project_root = config.project_root,
+            markdown_publisher = self._publish_markdown_update
         )
         self._discord_client:AssistantDiscordClient | None = None
         self._queue_condition = threading.Condition()
         self._queued_messages:deque[QueuedDiscordMessage] = deque()
         self._active_workflow:ActiveWorkflowState | None = None
         self._worker_thread:threading.Thread | None = None
+
+    def _publish_markdown_update(
+        self,
+        category_name:DiscordChannelCategory,
+        channel_name:str,
+        content:str
+    ) -> None:
+        """Mirror one markdown update into the mapped Discord channel.
+
+        Args:
+            category_name: Target Discord category.
+            channel_name: Target Discord text channel name.
+            content: Message content to publish.
+
+        Returns:
+            None
+        """
+
+        if self._discord_client is None:
+            print("[Agent] Discord client bridge is unavailable for markdown publication")
+            return
+
+        print(
+            "[Agent] Mirroring markdown update to Discord "
+            f"category={category_name} channel_name={channel_name}"
+        )
+        self._discord_client.send_guild_channel_message_threadsafe(
+            guild_id = self._config.guild_id,
+            category_name = category_name,
+            channel_name = channel_name,
+            content = content
+        )
 
     def start_worker(self, discord_client:AssistantDiscordClient) -> None:
         """Start the dedicated workflow worker thread.
@@ -214,12 +248,19 @@ class MarkdownAgent:
             except Exception as exc:
                 error_message = f"Unhandled workflow error: {exc}"
                 print(f"[Agent] {error_message}")
+                self._log_raw_execution(
+                    payload = {
+                        "type": "exception",
+                        "source": "workflow",
+                        "error": str(exc)
+                    }
+                )
 
                 if workflow_state is not None:
                     self._finish_workflow_error(
                         workflow_state = workflow_state,
                         step_result = WorkflowStepResult(
-                            status = "error",
+                            status = DiscordMessageStatus.ERROR,
                             termination_reason = "unhandled_exception",
                             error_message = error_message
                         )
@@ -227,7 +268,7 @@ class MarkdownAgent:
                 else:
                     self._mark_message_status(
                         queued_message = queued_message,
-                        status = "error"
+                        status = DiscordMessageStatus.ERROR
                     )
             finally:
                 if workflow_state is None:
@@ -271,7 +312,7 @@ class MarkdownAgent:
         )
         self._mark_message_status(
             queued_message = initial_message,
-            status = "thinking"
+            status = DiscordMessageStatus.THINKING
         )
 
         previous_workflow = self._active_workflow
@@ -353,7 +394,7 @@ class MarkdownAgent:
         for queued_message in messages_to_insert:
             self._mark_message_status(
                 queued_message = queued_message,
-                status = "thinking"
+                status = DiscordMessageStatus.THINKING
             )
             workflow_state.participating_messages.append(queued_message)
             workflow_state.last_activity_at = self._normalize_datetime(value = queued_message.created_at)
@@ -409,6 +450,8 @@ class MarkdownAgent:
         )
 
         tool_calls = assistant_message.tool_calls or []
+        if tool_calls:
+            self._log_raw_execution(payload = workflow_state.messages[-1])
         if not tool_calls:
             final_message = (assistant_message.content or "").strip()
             if final_message:
@@ -443,12 +486,22 @@ class MarkdownAgent:
             )
         except Exception as exc:
             print(f"[Agent] Tool execution error: {exc}")
+            tool_error_message = {
+                "role": "tool",
+                "tool_call_id": tool_call.id,
+                "content": f"Tool error: {exc}"
+            }
             self._append_message_to_history(
                 workflow_state = workflow_state,
-                message = {
-                    "role": "tool",
+                message = tool_error_message
+            )
+            self._log_raw_execution(
+                payload = {
+                    "type": "exception",
+                    "source": "tool",
+                    "tool_name": tool_call.function.name,
                     "tool_call_id": tool_call.id,
-                    "content": f"Tool error: {exc}"
+                    "error": str(exc)
                 }
             )
             return WorkflowStepResult(status = "continue")
@@ -464,14 +517,16 @@ class MarkdownAgent:
             )
             workflow_state.sent_messages.append(executed_call.result.outbound_message)
 
+        tool_response_message = {
+            "role": "tool",
+            "tool_call_id": tool_call.id,
+            "content": executed_call.result.output
+        }
         self._append_message_to_history(
             workflow_state = workflow_state,
-            message = {
-                "role": "tool",
-                "tool_call_id": tool_call.id,
-                "content": executed_call.result.output
-            }
+            message = tool_response_message
         )
+        self._log_raw_execution(payload = tool_response_message)
 
         if executed_call.result.is_terminal:
             print(f"[Agent] Workflow completed via tool:{executed_call.tool_name}")
@@ -516,7 +571,7 @@ class MarkdownAgent:
         for queued_message in workflow_state.participating_messages:
             self._mark_message_status(
                 queued_message = queued_message,
-                status = "success"
+                status = DiscordMessageStatus.SUCCESS
             )
 
         workflow_state.last_activity_at = datetime.now(timezone.utc)
@@ -552,18 +607,22 @@ class MarkdownAgent:
         for queued_message in workflow_state.participating_messages:
             self._mark_message_status(
                 queued_message = queued_message,
-                status = "error"
+                status = DiscordMessageStatus.ERROR
             )
 
         workflow_state.last_activity_at = datetime.now(timezone.utc)
         self._active_workflow = None
 
-    def _mark_message_status(self, queued_message:QueuedDiscordMessage, status:str) -> None:
+    def _mark_message_status(
+        self,
+        queued_message:QueuedDiscordMessage,
+        status:DiscordMessageStatus
+    ) -> None:
         """Update the Discord reaction state for one queued message.
 
         Args:
             queued_message: Message whose reaction state should change.
-            status: Workflow status name.
+            status: Workflow status value.
 
         Returns:
             None
@@ -609,6 +668,24 @@ class MarkdownAgent:
         self._discord_client.send_channel_message_threadsafe(
             channel_id = channel_id,
             content = content
+        )
+
+    def _log_raw_execution(self, payload:dict[str, Any]) -> None:
+        """Mirror raw JSON payloads into the Discord logs channel.
+
+        Args:
+            payload: Raw JSON payload to mirror.
+
+        Returns:
+            None
+        """
+
+        if self._discord_client is None:
+            print("[Agent] Discord client bridge is unavailable for logs")
+            return
+
+        self._discord_client.send_logs_message_threadsafe(
+            content = json.dumps(payload, indent = 2, ensure_ascii = False)
         )
 
     def _build_log_final_message(
@@ -804,11 +881,11 @@ class MarkdownAgent:
             system_prompt += f"{general_instructions}\n\n"
 
         memories_prompt = load_optional_markdown(path = project_root / "prompts" / "memories.md")
-        memories_content = memories_prompt or "_No stored memories yet._"
-        system_prompt += (
-            "## memories\n"
-            f"{memories_content}\n\n"
-        )
+        if memories_prompt:
+            system_prompt += (
+                "**Existing memories:**\n\n"
+                f"{memories_prompt}\n\n"
+            )
 
         workflow_files = self._format_available_files(directory = project_root / "workflows")
         data_files = self._format_available_files(directory = project_root / "data")
@@ -932,6 +1009,19 @@ class MarkdownAgent:
 
         log_path.write_text("\n".join(log_lines), encoding = "utf-8")
         print(f"[Agent] Wrote interaction log to {log_path}")
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
