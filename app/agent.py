@@ -1,4 +1,4 @@
-﻿"""Core markdown-driven agent loop."""
+"""Core markdown-driven agent loop."""
 
 from __future__ import annotations
 
@@ -73,7 +73,8 @@ class ActiveWorkflowState:
 
     Args:
         channel_id: Active Discord channel id.
-        messages: Full LLM conversation state.
+        instructions: Responses API system instructions for the workflow.
+        messages: Full Responses conversation state.
         participating_messages: Messages already inserted into conversation state.
         sent_messages: User-facing Discord messages sent during the run.
         steps_used: Number of LLM turns consumed.
@@ -84,6 +85,7 @@ class ActiveWorkflowState:
     """
 
     channel_id:int
+    instructions:str
     messages:list[dict[str, Any]]
     participating_messages:list[QueuedDiscordMessage] = field(default_factory = list)
     sent_messages:list[str] = field(default_factory = list)
@@ -331,22 +333,23 @@ class MarkdownAgent:
             previous_workflow.last_activity_at = self._normalize_datetime(value = initial_message.created_at)
             self._append_message_to_history(
                 workflow_state = previous_workflow,
-                message = {
-                    "role": "user",
-                    "content": self._build_follow_up_user_message(
+                message = self._build_user_input_item(
+                    content = self._build_follow_up_user_message(
                         queued_message = initial_message
                     )
-                }
+                )
             )
             return previous_workflow
 
         workflow_state = ActiveWorkflowState(
             channel_id = initial_message.channel_id,
+            instructions = self._build_system_prompt(),
             messages = [],
             participating_messages = [initial_message],
             last_activity_at = self._normalize_datetime(value = initial_message.created_at)
         )
         initial_messages = self._build_initial_messages(
+            instructions = workflow_state.instructions,
             user_message = initial_message.content,
             recent_channel_history = initial_message.recent_channel_history
         )
@@ -373,6 +376,7 @@ class MarkdownAgent:
             if not self._queued_messages:
                 return
 
+            # Messages arriving during generation are merged before the next step, not mid-request.
             remaining_messages:deque[QueuedDiscordMessage] = deque()
             while self._queued_messages:
                 queued_message = self._queued_messages.popleft()
@@ -400,12 +404,11 @@ class MarkdownAgent:
             workflow_state.last_activity_at = self._normalize_datetime(value = queued_message.created_at)
             self._append_message_to_history(
                 workflow_state = workflow_state,
-                message = {
-                    "role": "user",
-                    "content": self._build_follow_up_user_message(
+                message = self._build_user_input_item(
+                    content = self._build_follow_up_user_message(
                         queued_message = queued_message
                     )
-                }
+                )
             )
 
     def _run_single_step(self, workflow_state:ActiveWorkflowState) -> WorkflowStepResult:
@@ -438,22 +441,30 @@ class MarkdownAgent:
         step_number = workflow_state.steps_used + 1
         print(f"[Agent] Running step {step_number}/{self._config.max_agent_steps}")
 
-        assistant_message = self.llm_agent.create_tool_completion(
-            messages = workflow_state.messages,
+        tool_response = self.llm_agent.create_tool_response(
+            instructions = workflow_state.instructions,
+            input_items = workflow_state.messages,
             tools = self._tools.get_openai_tools()
         )
         workflow_state.steps_used += 1
         workflow_state.last_activity_at = datetime.now(timezone.utc)
-        self._append_message_to_history(
-            workflow_state = workflow_state,
-            message = self._message_to_dict(message = assistant_message)
+
+        for output_item in tool_response.output_items:
+            self._append_message_to_history(
+                workflow_state = workflow_state,
+                message = output_item
+            )
+
+        self._log_raw_execution(
+            payload = {
+                "type": "response",
+                "response_id": tool_response.response_id,
+                "output": tool_response.output_items
+            }
         )
 
-        tool_calls = assistant_message.tool_calls or []
-        if tool_calls:
-            self._log_raw_execution(payload = workflow_state.messages[-1])
-        if not tool_calls:
-            final_message = (assistant_message.content or "").strip()
+        if not tool_response.function_calls:
+            final_message = tool_response.text_output.strip()
             if final_message:
                 print("[Agent] Workflow completed via assistant content fallback")
                 self._send_discord_message(
@@ -470,71 +481,74 @@ class MarkdownAgent:
             print("[Agent] Assistant returned neither tool call nor content")
             self._append_message_to_history(
                 workflow_state = workflow_state,
-                message = {
-                    "role": "user",
-                    "content": "You must either call a tool or provide a final response."
-                }
+                message = self._build_user_input_item(
+                    content = "You must either call a tool or provide a final response."
+                )
             )
             return WorkflowStepResult(status = "continue")
 
-        tool_call = tool_calls[0]
+        terminal_tool_name:str | None = None
+        terminal_final_message:str = ""
 
-        try:
-            executed_call = self._tools.execute_tool_call(
-                tool_name = tool_call.function.name,
-                arguments_json = tool_call.function.arguments
+        for function_call in tool_response.function_calls:
+            try:
+                executed_call = self._tools.execute_tool_call(
+                    tool_name = function_call.name,
+                    arguments_json = function_call.arguments_json
+                )
+                tool_output = executed_call.result.output
+            except Exception as exc:
+                print(f"[Agent] Tool execution error: {exc}")
+                tool_output = f"Tool error: {exc}"
+                self._log_raw_execution(
+                    payload = {
+                        "type": "exception",
+                        "source": "tool",
+                        "tool_name": function_call.name,
+                        "tool_call_id": function_call.call_id,
+                        "error": str(exc)
+                    }
+                )
+                self._append_message_to_history(
+                    workflow_state = workflow_state,
+                    message = self._build_function_call_output_item(
+                        call_id = function_call.call_id,
+                        output = tool_output
+                    )
+                )
+                continue
+
+            if executed_call.result.outbound_message:
+                print(
+                    "[Agent] Sending outbound Discord message from tool "
+                    f"tool_name={executed_call.tool_name}"
+                )
+                self._send_discord_message(
+                    channel_id = workflow_state.channel_id,
+                    content = executed_call.result.outbound_message
+                )
+                workflow_state.sent_messages.append(executed_call.result.outbound_message)
+
+            tool_response_message = self._build_function_call_output_item(
+                call_id = function_call.call_id,
+                output = tool_output
             )
-        except Exception as exc:
-            print(f"[Agent] Tool execution error: {exc}")
-            tool_error_message = {
-                "role": "tool",
-                "tool_call_id": tool_call.id,
-                "content": f"Tool error: {exc}"
-            }
             self._append_message_to_history(
                 workflow_state = workflow_state,
-                message = tool_error_message
+                message = tool_response_message
             )
-            self._log_raw_execution(
-                payload = {
-                    "type": "exception",
-                    "source": "tool",
-                    "tool_name": tool_call.function.name,
-                    "tool_call_id": tool_call.id,
-                    "error": str(exc)
-                }
-            )
-            return WorkflowStepResult(status = "continue")
+            self._log_raw_execution(payload = tool_response_message)
 
-        if executed_call.result.outbound_message:
-            print(
-                "[Agent] Sending outbound Discord message from tool "
-                f"tool_name={executed_call.tool_name}"
-            )
-            self._send_discord_message(
-                channel_id = workflow_state.channel_id,
-                content = executed_call.result.outbound_message
-            )
-            workflow_state.sent_messages.append(executed_call.result.outbound_message)
+            if executed_call.result.is_terminal and terminal_tool_name is None:
+                terminal_tool_name = executed_call.tool_name
+                terminal_final_message = executed_call.result.outbound_message or tool_output
 
-        tool_response_message = {
-            "role": "tool",
-            "tool_call_id": tool_call.id,
-            "content": executed_call.result.output
-        }
-        self._append_message_to_history(
-            workflow_state = workflow_state,
-            message = tool_response_message
-        )
-        self._log_raw_execution(payload = tool_response_message)
-
-        if executed_call.result.is_terminal:
-            print(f"[Agent] Workflow completed via tool:{executed_call.tool_name}")
-            final_message = executed_call.result.outbound_message or executed_call.result.output
+        if terminal_tool_name is not None:
+            print(f"[Agent] Workflow completed via tool:{terminal_tool_name}")
             return WorkflowStepResult(
                 status = "terminal",
-                termination_reason = f"tool:{executed_call.tool_name}",
-                final_message = final_message
+                termination_reason = f"tool:{terminal_tool_name}",
+                final_message = terminal_final_message
             )
 
         return WorkflowStepResult(status = "continue")
@@ -713,27 +727,28 @@ class MarkdownAgent:
 
     def _build_initial_messages(
         self,
+        instructions:str,
         user_message:str,
         recent_channel_history:str = ""
     ) -> list[dict[str, Any]]:
-        """Construct the initial prompt context for the agent.
+        """Construct the initial Responses input items for the agent.
 
         Args:
+            instructions: Full prompt content stored in local context and sent as API instructions.
             user_message: Raw DM content from the user.
             recent_channel_history: Optional formatted transcript from the same Discord channel.
 
         Returns:
-            list[dict[str, Any]]: Initial chat messages for the model.
+            list[dict[str, Any]]: Initial input items for the model.
         """
 
-        system_prompt = self._build_system_prompt()
         user_content = self._build_user_message(
             user_message = user_message,
             recent_channel_history = recent_channel_history
         )
         return [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_content}
+            self._build_system_input_item(content = instructions),
+            self._build_user_input_item(content = user_content)
         ]
 
     def _should_reset_messages_for_new_workflow(
@@ -787,11 +802,11 @@ class MarkdownAgent:
         workflow_state:ActiveWorkflowState,
         message:dict[str, Any]
     ) -> None:
-        """Append one message and trim the oldest retained history entry if needed.
+        """Append one input item and trim the oldest retained history entry if needed.
 
         Args:
             workflow_state: Workflow state whose conversation should be updated.
-            message: Chat message payload to append.
+            message: Responses input item payload to append.
 
         Returns:
             None
@@ -801,7 +816,7 @@ class MarkdownAgent:
         max_history_messages = self._config.max_agent_steps
         while len(workflow_state.messages) > max_history_messages:
             removal_index = 0
-            if workflow_state.messages and workflow_state.messages[0].get("role") == "system":
+            if self._history_has_persistent_prompt(messages = workflow_state.messages):
                 removal_index = 1
 
             if removal_index >= len(workflow_state.messages):
@@ -810,7 +825,8 @@ class MarkdownAgent:
             removed_message = workflow_state.messages.pop(removal_index)
             print(
                 "[Agent] Trimmed oldest conversation history message "
-                f"role={removed_message.get('role', 'unknown')} max_messages={max_history_messages}"
+                f"label={self._get_history_item_label(message = removed_message)} "
+                f"max_messages={max_history_messages}"
             )
 
     def _build_user_message(
@@ -919,41 +935,79 @@ class MarkdownAgent:
 
         return "\n".join(available_files)
 
-    def _message_to_dict(self, message:Any) -> dict[str, Any]:
-        """Convert an SDK assistant message into a chat-completions message dict.
+    def _build_system_input_item(self, content:str) -> dict[str, Any]:
+        """Build one persistent system prompt item for local Responses context.
 
         Args:
-            message: SDK assistant message object.
+            content: System prompt text.
 
         Returns:
-            dict[str, Any]: Message payload suitable for a follow-up API call.
+            dict[str, Any]: Persistent system context item.
         """
 
-        tool_calls = []
-        for tool_call in message.tool_calls or []:
-            tool_calls.append(
-                {
-                    "id": tool_call.id,
-                    "type": "function",
-                    "function": {
-                        "name": tool_call.function.name,
-                        "arguments": tool_call.function.arguments
-                    }
-                }
-            )
-
-        payload = {
-            "role": "assistant",
-            "content": message.content
+        return {
+            "role": "system",
+            "content": content
         }
-        if tool_calls:
-            payload["tool_calls"] = tool_calls
 
-        print(
-            "[Agent] Appending sanitized assistant message to conversation state "
-            f"tool_calls={len(tool_calls)}, has_content={bool(message.content)}"
-        )
-        return payload
+    def _build_user_input_item(self, content:str) -> dict[str, Any]:
+        """Build one user input item for the Responses API.
+
+        Args:
+            content: User-visible text payload.
+
+        Returns:
+            dict[str, Any]: Responses user input item.
+        """
+
+        return {
+            "role": "user",
+            "content": content
+        }
+
+    def _history_has_persistent_prompt(self, messages:list[dict[str, Any]]) -> bool:
+        """Return whether the retained history starts with the persistent prompt item.
+
+        Args:
+            messages: Current retained history.
+
+        Returns:
+            bool: True when the first item is the stored prompt context.
+        """
+
+        if not messages:
+            return False
+
+        return messages[0].get("role") == "system"
+
+    def _build_function_call_output_item(self, call_id:str, output:str) -> dict[str, Any]:
+        """Build one function-call output item for the Responses API.
+
+        Args:
+            call_id: Responses function call id.
+            output: Tool output string.
+
+        Returns:
+            dict[str, Any]: Responses function-call output item.
+        """
+
+        return {
+            "type": "function_call_output",
+            "call_id": call_id,
+            "output": output
+        }
+
+    def _get_history_item_label(self, message:dict[str, Any]) -> str:
+        """Return a compact label for one retained history item.
+
+        Args:
+            message: Responses history item.
+
+        Returns:
+            str: Role or type label for logs.
+        """
+
+        return str(message.get("role") or message.get("type") or "unknown")
 
     def _write_interaction_log(
         self,
@@ -995,7 +1049,7 @@ class MarkdownAgent:
         ]
 
         for index, message in enumerate(messages, start = 1):
-            role = str(message.get("role", "unknown"))
+            role = self._get_history_item_label(message = message)
             log_lines.extend(
                 [
                     f"### {index}. {role}",
@@ -1009,6 +1063,8 @@ class MarkdownAgent:
 
         log_path.write_text("\n".join(log_lines), encoding = "utf-8")
         print(f"[Agent] Wrote interaction log to {log_path}")
+
+
 
 
 

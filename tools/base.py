@@ -55,10 +55,8 @@ class ToolDefinition:
 
         return {
             "type": "function",
-            "function": {
-                "name": self.name,
-                "description": self.description,
-                "parameters": self.parameters,
-                "strict": True
-            }
+            "name": self.name,
+            "description": self.description,
+            "parameters": self.parameters,
+            "strict": True
         }
