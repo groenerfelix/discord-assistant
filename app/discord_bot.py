@@ -1,4 +1,4 @@
-﻿"""Discord integration for the markdown-driven assistant."""
+"""Discord integration for the markdown-driven assistant."""
 
 from __future__ import annotations
 
@@ -11,11 +11,16 @@ from discord.ext import tasks
 
 from app.agent import MarkdownAgent, QueuedDiscordMessage
 from app.config import AppConfig
-from app.discord_utils import DiscordChannelCategory, DiscordMessageStatus
+from app.discord_utils import (
+    DISCORD_MESSAGE_CHARACTER_LIMIT,
+    DiscordChannelCategory,
+    DiscordMessageStatus,
+    split_discord_message
+)
 
 
 MAX_HISTORY_HOURS = 50
-MAX_HISTORY_MESSAGES = 10
+MAX_HISTORY_MESSAGES = 4
 MAX_HISTORY_TOKENS = 10000
 HISTORY_FETCH_LIMIT = 50
 QUEUED_REACTION = "\N{HOURGLASS WITH FLOWING SAND}"
@@ -338,10 +343,12 @@ class AssistantDiscordClient(discord.Client):
 
         print(f"[DiscordBot] Sending channel message channel_id={channel_id}")
 
-        try:
-            await channel.send(content)
-        except discord.HTTPException as exc:
-            print(f"[DiscordBot] Failed to send channel message: {exc}")
+        for content_chunk in split_discord_message(content = content):
+            try:
+                await channel.send(content_chunk)
+            except discord.HTTPException as exc:
+                print(f"[DiscordBot] Failed to send channel message: {exc}")
+                return
 
     async def send_logs_message(self, content:str) -> None:
         """Send raw execution text to the logs channel in fenced code blocks.
@@ -397,7 +404,7 @@ class AssistantDiscordClient(discord.Client):
 
         fence_prefix = "```json\n"
         fence_suffix = "\n```"
-        max_content_length = 2000 - len(fence_prefix) - len(fence_suffix)
+        max_content_length = DISCORD_MESSAGE_CHARACTER_LIMIT - len(fence_prefix) - len(fence_suffix)
 
         if max_content_length <= 0:
             return [f"{fence_prefix}{content}{fence_suffix}"]
@@ -405,14 +412,13 @@ class AssistantDiscordClient(discord.Client):
         if not content:
             return [f"{fence_prefix}{fence_suffix}"]
 
-        messages:list[str] = []
-        start_index = 0
-        while start_index < len(content):
-            end_index = min(start_index + max_content_length, len(content))
-            messages.append(f"{fence_prefix}{content[start_index:end_index]}{fence_suffix}")
-            start_index = end_index
-
-        return messages
+        return [
+            f"{fence_prefix}{message_chunk}{fence_suffix}"
+            for message_chunk in split_discord_message(
+                content = content,
+                max_length = max_content_length
+            )
+        ]
 
     async def send_guild_channel_message(
         self,
@@ -695,7 +701,7 @@ class AssistantDiscordClient(discord.Client):
 
         print(f"[DiscordBot] Fetching up to {MAX_HISTORY_MESSAGES} recent messages from the same channel")
         async for historical_message in message.channel.history(
-            limit = HISTORY_FETCH_LIMIT,
+            limit = MAX_HISTORY_MESSAGES,
             before = message.created_at,
             oldest_first = False
         ):
