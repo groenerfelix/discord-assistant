@@ -54,7 +54,7 @@ def extract_text_from_html_mail_content(html_content:str, retain_links:bool = Fa
             )
             if href_match is None:
                 return ""
-            return href_match.group(2)
+            return " " + href_match.group(2) + " "
 
         text_content = re.sub(
             pattern = r"<a\b[^>]*>.*?</a>",

@@ -600,7 +600,7 @@ def fetch_sender_content_tuples() -> list[tuple[str, str]]:
         )
 
         try:
-            plain_text_content = util.extract_text_from_html_mail_content(html_content = content, retain_links = True)
+            plain_text_content = util.extract_text_from_html_mail_content(html_content = content, retain_links = False)
             sender_content_pairs.append((sender, plain_text_content))
         except Exception as exc:
             print(f"[EmailTools] Error when extracting content: {exc}")
