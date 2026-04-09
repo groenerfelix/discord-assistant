@@ -24,7 +24,7 @@ WEB_SEARCH_PARAMETERS:dict[str, Any] = {
     "properties": {
         "query": {
             "type": "string",
-            "description": "Search query to look up on the web."
+            "description": "Search query to look up on the web. Use full sentences, natural language, and provide necessary context such as motivation."
         }
     },
     "required": ["query"],
@@ -54,8 +54,7 @@ def build_web_search_tool_definitions() -> list[ToolDefinition]:
         ToolDefinition(
             name = "web_search",
             description = (
-                "Search the web with a natural-language query that includes all relevant "
-                "context and motivation, then return the response."
+                "Search the web."
             ),
             parameters = WEB_SEARCH_PARAMETERS,
             handler = web_search

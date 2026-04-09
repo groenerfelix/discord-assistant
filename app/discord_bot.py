@@ -45,17 +45,18 @@ class AssistantDiscordClient(discord.Client):
         self._worker_started = False
         self._bot_loop:asyncio.AbstractEventLoop | None = None
 
-    @tasks.loop(time = time(hour = 6, tzinfo = timezone(timedelta(hours = -7))))
+
+    @tasks.loop(time = time(hour = 13))
     async def daily_routine(self) -> None:
-        print("[DiscordBot] Kicking off morning routine")
+        print("[DiscordBot] Kicking off daily routine")
 
         if self._admin_dm_channel_id == 0:
-            print("[DiscordBot] Skipping morning routine because DISCORD_ADMIN_DM_CHANNEL_ID is not configured")
+            print("[DiscordBot] Skipping daily routine because DISCORD_ADMIN_DM_CHANNEL_ID is not configured")
             return
 
         self._enqueue_synthetic_workflow(
             channel_id = self._admin_dm_channel_id,
-            content = "Start my morning routine workflow"
+            content = "This is an autmated reminder for you to start my morning routine workflow."
         )
 
 
@@ -81,6 +82,7 @@ class AssistantDiscordClient(discord.Client):
         if not self.daily_routine.is_running():
             self.daily_routine.start()
             print("[DiscordBot] Daily routine loop started")
+
 
     async def on_message(self, message:discord.Message) -> None:
         if message.author == self.user:
