@@ -53,11 +53,12 @@ class AssistantDiscordClient(discord.Client):
 
     @tasks.loop(time = time(hour = 13))
     async def daily_routine(self) -> None:
-        print("[DiscordBot] Kicking off daily routine")
 
         if self._admin_dm_channel_id == 0:
             print("[DiscordBot] Skipping daily routine because DISCORD_ADMIN_DM_CHANNEL_ID is not configured")
             return
+
+        print("[DiscordBot] Kicking off daily routine")
 
         self._enqueue_synthetic_workflow(
             channel_id = self._admin_dm_channel_id,
@@ -65,9 +66,8 @@ class AssistantDiscordClient(discord.Client):
         )
 
 
-    async def on_ready(self) -> None:
+    async def setup_hook(self) -> None:
         self._bot_loop = asyncio.get_running_loop()
-        print(f"[DiscordBot] Logged in as {self.user}")
 
         if self._logs_channel_id is None:
             logs_channel = await self.get_or_create_guild_text_channel(
@@ -87,6 +87,29 @@ class AssistantDiscordClient(discord.Client):
         if not self.daily_routine.is_running():
             self.daily_routine.start()
             print("[DiscordBot] Daily routine loop started")
+
+    # async def on_ready(self) -> None:
+    #     self._bot_loop = asyncio.get_running_loop()
+    #     print(f"[DiscordBot] Logged in as {self.user}")
+
+    #     if self._logs_channel_id is None:
+    #         logs_channel = await self.get_or_create_guild_text_channel(
+    #             guild_id = self._config.guild_id,
+    #             category_name = DiscordChannelCategory.OTHER,
+    #             channel_name = "logs"
+    #         )
+    #         if logs_channel is not None:
+    #             self._logs_channel_id = logs_channel.id
+    #             print(f"[DiscordBot] Logs channel ready channel_id={self._logs_channel_id}")
+
+    #     if not self._worker_started:
+    #         self._agent.start_worker(discord_client = self)
+    #         self._worker_started = True
+    #         print("[DiscordBot] Agent worker started")
+
+    #     if not self.daily_routine.is_running():
+    #         self.daily_routine.start()
+    #         print("[DiscordBot] Daily routine loop started")
 
 
     async def on_message(self, message:discord.Message) -> None:
