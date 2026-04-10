@@ -6,6 +6,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 import json
+import logging
 import os
 from pathlib import Path
 import threading
@@ -20,9 +21,10 @@ from tools.markdown_tools import list_markdown_files
 
 from app.util import get_datetime_string
 
-
 if TYPE_CHECKING:
     from app.discord_bot import AssistantDiscordClient
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen = True)
@@ -150,12 +152,13 @@ class MarkdownAgent:
         """
 
         if self._discord_client is None:
-            print("[Agent] Discord client bridge is unavailable for markdown publication")
+            logger.warning("Discord client bridge is unavailable for markdown publication")
             return
 
-        print(
-            "[Agent] Mirroring markdown update to Discord "
-            f"category={category_name} channel_name={channel_name}"
+        logger.info(
+            "Mirroring markdown update to Discord category=%s channel_name=%s",
+            category_name,
+            channel_name
         )
         self._discord_client.send_guild_channel_message_threadsafe(
             guild_id = self._config.guild_id,
@@ -176,7 +179,7 @@ class MarkdownAgent:
 
         self._discord_client = discord_client
         if self._worker_thread is not None and self._worker_thread.is_alive():
-            print("[Agent] Worker thread already running")
+            logger.debug("Worker thread already running")
             return
 
         self._worker_thread = threading.Thread(
@@ -185,7 +188,7 @@ class MarkdownAgent:
             daemon = True
         )
         self._worker_thread.start()
-        print("[Agent] Worker thread started")
+        logger.info("Worker thread started")
 
     def enqueue_message(self, queued_message:QueuedDiscordMessage) -> None:
         """Queue an incoming Discord message for worker processing.
@@ -202,10 +205,11 @@ class MarkdownAgent:
             queue_size = len(self._queued_messages)
             self._queue_condition.notify()
 
-        print(
-            "[Agent] Enqueued message "
-            f"message_id={queued_message.message_id} channel_id={queued_message.channel_id} "
-            f"queue_size={queue_size}"
+        logger.info(
+            "Enqueued message message_id=%s channel_id=%s queue_size=%s",
+            queued_message.message_id,
+            queued_message.channel_id,
+            queue_size
         )
 
     def _worker_loop(self) -> None:
@@ -218,7 +222,7 @@ class MarkdownAgent:
             None
         """
 
-        print("[Agent] Worker loop is running")
+        logger.info("Worker loop is running")
 
         while True:
             queued_message = self._wait_for_next_message()
@@ -248,8 +252,8 @@ class MarkdownAgent:
                     )
                     break
             except Exception as exc:
-                error_message = f"Unhandled workflow error: {exc}"
-                print(f"[Agent] {error_message}")
+                # error_message = "Unhandled workflow error: %s" % exc
+                logger.exception("Unhandled workflow error")
                 self._log_raw_execution(
                     payload = {
                         "type": "exception",
@@ -264,7 +268,7 @@ class MarkdownAgent:
                         step_result = WorkflowStepResult(
                             status = DiscordMessageStatus.ERROR,
                             termination_reason = "unhandled_exception",
-                            error_message = error_message
+                            error_message = "Unhandled worklfow error"
                         )
                     )
                 else:
@@ -292,9 +296,10 @@ class MarkdownAgent:
 
             queued_message = self._queued_messages.popleft()
 
-        print(
-            "[Agent] Dequeued message "
-            f"message_id={queued_message.message_id} channel_id={queued_message.channel_id}"
+        logger.debug(
+            "Dequeued message message_id=%s channel_id=%s",
+            queued_message.message_id,
+            queued_message.channel_id
         )
         return queued_message
 
@@ -308,9 +313,10 @@ class MarkdownAgent:
             ActiveWorkflowState: Newly initialized workflow state.
         """
 
-        print(
-            "[Agent] Starting workflow "
-            f"channel_id={initial_message.channel_id} message_id={initial_message.message_id}"
+        logger.info(
+            "Starting workflow channel_id=%s message_id=%s",
+            initial_message.channel_id,
+            initial_message.message_id
         )
         self._mark_message_status(
             queued_message = initial_message,
@@ -322,9 +328,10 @@ class MarkdownAgent:
             previous_workflow = previous_workflow,
             initial_message = initial_message
         ):
-            print(
-                "[Agent] Reusing retained conversation history "
-                f"channel_id={initial_message.channel_id} previous_messages={len(previous_workflow.messages)}"
+            logger.info(
+                "Reusing retained conversation history channel_id=%s previous_messages=%s",
+                initial_message.channel_id,
+                len(previous_workflow.messages)
             )
             previous_workflow.channel_id = initial_message.channel_id
             previous_workflow.participating_messages = [initial_message]
@@ -390,9 +397,10 @@ class MarkdownAgent:
         if not messages_to_insert:
             return
 
-        print(
-            "[Agent] Inserting queued same-channel follow-ups "
-            f"channel_id={workflow_state.channel_id} count={len(messages_to_insert)}"
+        logger.info(
+            "Inserting queued same-channel follow-ups channel_id=%s count=%s",
+            workflow_state.channel_id,
+            len(messages_to_insert)
         )
 
         for queued_message in messages_to_insert:
@@ -422,7 +430,7 @@ class MarkdownAgent:
         """
 
         if workflow_state.steps_used >= self._config.max_agent_steps:
-            print("[Agent] Workflow hit hard step limit")
+            logger.warning("Workflow hit hard step limit")
             limit_message = (
                 "I hit the workflow step limit before I could finish safely. "
                 "Please send a shorter follow-up or refine the request."
@@ -439,7 +447,11 @@ class MarkdownAgent:
             )
 
         step_number = workflow_state.steps_used + 1
-        print(f"[Agent] Running step {step_number}/{self._config.max_agent_steps}")
+        logger.info(
+            "Running step %s/%s",
+            step_number,
+            self._config.max_agent_steps
+        )
 
         tool_response = self.llm_agent.create_tool_response(
             instructions = workflow_state.instructions,
@@ -466,7 +478,7 @@ class MarkdownAgent:
         if not tool_response.function_calls:
             final_message = tool_response.text_output.strip()
             if final_message:
-                print("[Agent] Workflow completed via assistant content fallback")
+                logger.info("Workflow completed via assistant content fallback")
                 self._send_discord_message(
                     channel_id = workflow_state.channel_id,
                     content = final_message
@@ -478,7 +490,7 @@ class MarkdownAgent:
                     final_message = final_message
                 )
 
-            print("[Agent] Assistant returned neither tool call nor content")
+            logger.warning("Assistant returned neither tool call nor content")
             self._append_message_to_history(
                 workflow_state = workflow_state,
                 message = self._build_user_input_item(
@@ -498,8 +510,8 @@ class MarkdownAgent:
                 )
                 tool_output = executed_call.result.output
             except Exception as exc:
-                print(f"[Agent] Tool execution error: {exc}")
-                tool_output = f"Tool error: {exc}"
+                logger.exception("Tool execution error")
+                tool_output = "Tool error: %s" % exc
                 self._log_raw_execution(
                     payload = {
                         "type": "exception",
@@ -519,9 +531,9 @@ class MarkdownAgent:
                 continue
 
             if executed_call.result.outbound_message:
-                print(
-                    "[Agent] Sending outbound Discord message from tool "
-                    f"tool_name={executed_call.tool_name}"
+                logger.info(
+                    "Sending outbound Discord message from tool tool_name=%s",
+                    executed_call.tool_name
                 )
                 self._send_discord_message(
                     channel_id = workflow_state.channel_id,
@@ -544,7 +556,7 @@ class MarkdownAgent:
                 terminal_final_message = executed_call.result.outbound_message or tool_output
 
         if terminal_tool_name is not None:
-            print(f"[Agent] Workflow completed via tool:{terminal_tool_name}")
+            logger.info("Workflow completed via tool:%s", terminal_tool_name)
             return WorkflowStepResult(
                 status = "terminal",
                 termination_reason = f"tool:{terminal_tool_name}",
@@ -568,9 +580,10 @@ class MarkdownAgent:
             None
         """
 
-        print(
-            "[Agent] Workflow completed successfully "
-            f"channel_id={workflow_state.channel_id} messages={len(workflow_state.participating_messages)}"
+        logger.info(
+            "Workflow completed successfully channel_id=%s messages=%s",
+            workflow_state.channel_id,
+            len(workflow_state.participating_messages)
         )
         self._write_interaction_log(
             messages = workflow_state.messages,
@@ -607,9 +620,10 @@ class MarkdownAgent:
         """
 
         error_message = step_result.error_message or "Workflow failed unexpectedly."
-        print(
-            "[Agent] Workflow failed "
-            f"channel_id={workflow_state.channel_id} error={error_message}"
+        logger.error(
+            "Workflow failed channel_id=%s error=%s",
+            workflow_state.channel_id,
+            error_message
         )
         self._write_interaction_log(
             messages = workflow_state.messages,
@@ -642,20 +656,23 @@ class MarkdownAgent:
             None
         """
 
-        print(
-            "[Agent] Updating message reaction "
-            f"message_id={queued_message.message_id} channel_id={queued_message.channel_id} status={status}"
+        logger.debug(
+            "Updating message reaction message_id=%s channel_id=%s status=%s",
+            queued_message.message_id,
+            queued_message.channel_id,
+            status
         )
 
         if queued_message.message_id is None:
-            print(
-                "[Agent] Skipping Discord reaction update for synthetic workflow trigger "
-                f"channel_id={queued_message.channel_id} status={status}"
+            logger.debug(
+                "Skipping Discord reaction update for synthetic workflow trigger channel_id=%s status=%s",
+                queued_message.channel_id,
+                status
             )
             return
 
         if self._discord_client is None:
-            print("[Agent] Discord client bridge is unavailable for reaction update")
+            logger.warning("Discord client bridge is unavailable for reaction update")
             return
 
         self._discord_client.update_message_status_threadsafe(
@@ -676,7 +693,7 @@ class MarkdownAgent:
         """
 
         if self._discord_client is None:
-            print("[Agent] Discord client bridge is unavailable for sending")
+            logger.warning("Discord client bridge is unavailable for sending")
             return
 
         self._discord_client.send_channel_message_threadsafe(
@@ -695,7 +712,7 @@ class MarkdownAgent:
         """
 
         if self._discord_client is None:
-            print("[Agent] Discord client bridge is unavailable for logs")
+            logger.warning("Discord client bridge is unavailable for logs")
             return
 
         self._discord_client.send_logs_message_threadsafe(
@@ -767,17 +784,18 @@ class MarkdownAgent:
         """
 
         if previous_workflow.channel_id != initial_message.channel_id:
-            print(
-                "[Agent] Resetting retained history due to channel change "
-                f"previous_channel_id={previous_workflow.channel_id} new_channel_id={initial_message.channel_id}"
+            logger.info(
+                "Resetting retained history due to channel change previous_channel_id=%s new_channel_id=%s",
+                previous_workflow.channel_id,
+                initial_message.channel_id
             )
             return True
 
         elapsed = self._normalize_datetime(value = initial_message.created_at) - previous_workflow.last_activity_at
         if elapsed > timedelta(minutes = 30):
-            print(
-                "[Agent] Resetting retained history due to inactivity "
-                f"elapsed_minutes={elapsed.total_seconds() / 60:.1f}"
+            logger.info(
+                "Resetting retained history due to inactivity elapsed_minutes=%.1f",
+                elapsed.total_seconds() / 60
             )
             return True
 
@@ -823,10 +841,10 @@ class MarkdownAgent:
                 break
 
             removed_message = workflow_state.messages.pop(removal_index)
-            print(
-                "[Agent] Trimmed oldest conversation history message "
-                f"label={self._get_history_item_label(message = removed_message)} "
-                f"max_messages={max_history_messages}"
+            logger.debug(
+                "Trimmed oldest conversation history message label=%s max_messages=%s",
+                self._get_history_item_label(message = removed_message),
+                max_history_messages
             )
 
     def _build_user_message(
@@ -925,7 +943,7 @@ class MarkdownAgent:
             str: Newline-separated project-relative markdown file paths.
         """
 
-        print(f"[Agent] Building prompt file list for: {directory}")
+        logger.debug("Building prompt file list for: %s", directory)
         available_files = list_markdown_files(
             directory = directory,
             project_root = self._config.project_root
@@ -1062,7 +1080,7 @@ class MarkdownAgent:
             )
 
         log_path.write_text("\n".join(log_lines), encoding = "utf-8")
-        print(f"[Agent] Wrote interaction log to {log_path}")
+        logger.info("Wrote interaction log to %s", log_path)
 
 
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 import app.util as util
 import json
+import logging
 import os
 from typing import Any
 
@@ -14,9 +15,12 @@ try:
     from dotenv import load_dotenv
     load_dotenv()
 except ImportError:
-    print("[EmailTools] python-dotenv is not installed, skipping .env loading")
+    logging.getLogger(__name__).debug("python-dotenv is not installed, skipping .env loading")
 
 from tools.base import ToolDefinition, ToolExecutionResult
+
+
+logger = logging.getLogger(__name__)
 
 
 ACCOUNTS_BASE_URL = "https://accounts.zoho.com"
@@ -61,12 +65,12 @@ class AccessTokenManager:
             return self.access_token
 
         if self.refresh_token:
-            print("[EmailTools] Access token missing, refreshing from ZOHO_MAIL_REFRESH")
+            logger.info("Access token missing, refreshing from ZOHO_MAIL_REFRESH")
             self.refresh_or_raise(reason = "No access token was configured.")
             return self.access_token
 
         if self.grant_token:
-            print("[EmailTools] Access token missing, exchanging ZOHO_MAIL_GRANT")
+            logger.info("Access token missing, exchanging ZOHO_MAIL_GRANT")
             token_payload = exchange_grant_code(
                 client_id = self.client_id,
                 client_secret = self.client_secret,
@@ -76,7 +80,7 @@ class AccessTokenManager:
             new_refresh_token = str(token_payload.get("refresh_token", "")).strip()
             if new_refresh_token:
                 self.refresh_token = new_refresh_token
-                print("[EmailTools] New refresh token received from grant exchange")
+                logger.info("New refresh token received from grant exchange")
             if not self.access_token:
                 raise RuntimeError(
                     f"Zoho grant exchange did not return an access token: {token_payload}"
@@ -128,7 +132,7 @@ class AccessTokenManager:
             )
 
         self.access_token = access_token
-        print("[EmailTools] Successfully refreshed access token after authorization failure")
+        logger.info("Successfully refreshed access token after authorization failure")
         return self.access_token
 
 
@@ -143,7 +147,7 @@ def build_email_tool_definitions() -> list[ToolDefinition]:
     """
 
     def fetch_recent_emails(arguments:dict[str, Any]) -> ToolExecutionResult:
-        print(f"[EmailTools] Running fetch_recent_emails with args: {arguments}")
+        logger.info("Running fetch_recent_emails with args: %s", arguments)
         sender_content_pairs = fetch_sender_content_tuples()
         output = {
             "messageCount": len(sender_content_pairs),
@@ -180,7 +184,7 @@ def post_form(url:str, data:dict[str, str]) -> dict[str, Any]:
         dict[str, Any]: Parsed JSON response body.
     """
 
-    print(f"[EmailTools] POST {url}")
+    logger.debug("POST %s", url)
     response = requests.post(
         url = url,
         data = data,
@@ -192,8 +196,8 @@ def post_form(url:str, data:dict[str, str]) -> dict[str, Any]:
     except ValueError:
         payload = {"raw_text": response.text}
 
-    print(f"[EmailTools] POST status={response.status_code}")
-    print(f"[EmailTools] POST payload={json.dumps(payload, indent = 2)}")
+    logger.debug("POST status=%s", response.status_code)
+    logger.debug("POST payload=%s", json.dumps(payload, indent = 2))
     response.raise_for_status()
 
     if "error" in payload:
@@ -218,7 +222,7 @@ def get_json(
         dict[str, Any]: Parsed JSON response body.
     """
 
-    print(f"[EmailTools] GET {url} params={params}")
+    logger.debug("GET %s params=%s", url, params)
     response = requests.get(
         url = url,
         headers = headers,
@@ -231,7 +235,7 @@ def get_json(
     except ValueError:
         payload = {"raw_text": response.text}
 
-    print(f"[EmailTools] GET status={response.status_code}")
+    logger.debug("GET status=%s", response.status_code)
 
     if "error" in payload:
         raise RuntimeError(f"Zoho Mail API error: {payload}")
@@ -339,7 +343,7 @@ def parse_sender_whitelist() -> set[str]:
         if normalized_item:
             whitelist.add(normalized_item)
 
-    print(f"[EmailTools] Loaded {len(whitelist)} whitelisted sender address(es)")
+    logger.debug("Loaded %s whitelisted sender address(es)", len(whitelist))
     return whitelist
 
 
@@ -390,7 +394,7 @@ def perform_get_with_auto_refresh(
         if status_code != 401:
             raise
 
-        print("[EmailTools] Received 401, attempting to refresh the access token")
+        logger.warning("Received 401, attempting to refresh the access token")
         token_manager.refresh_or_raise(reason = "Zoho returned 401 for a message request.")
 
         try:
@@ -490,7 +494,7 @@ def fetch_recent_messages(
     start = 1
     recent_messages:list[dict[str, Any]] = []
 
-    print(f"[EmailTools] Fetching messages newer than {cutoff.isoformat()}")
+    logger.info("Fetching messages newer than %s", cutoff.isoformat())
 
     while True:
         messages = get_mail_messages_page(
@@ -499,9 +503,11 @@ def fetch_recent_messages(
             start = start,
             token_manager = token_manager
         )
-        print(
-            f"[EmailTools] Folder {folder_id} returned {len(messages)} message(s) "
-            f"starting at {start}"
+        logger.debug(
+            "Folder %s returned %s message(s) starting at %s",
+            folder_id,
+            len(messages),
+            start
         )
 
         if not messages:
@@ -522,7 +528,7 @@ def fetch_recent_messages(
 
         start += PAGE_SIZE
 
-    print(f"[EmailTools] Messages from the last 24 hours: {len(recent_messages)}")
+    logger.info("Messages from the last 24 hours: %s", len(recent_messages))
     return recent_messages
 
 
@@ -541,7 +547,7 @@ def filter_messages_by_sender(
     """
 
     if not whitelist:
-        print("[EmailTools] Sender whitelist is empty, keeping all messages")
+        logger.info("Sender whitelist is empty, keeping all messages")
         return messages
 
     filtered_messages:list[dict[str, Any]] = []
@@ -551,7 +557,7 @@ def filter_messages_by_sender(
         if sender_address in whitelist:
             filtered_messages.append(message)
 
-    print(f"[EmailTools] Messages after sender whitelist: {len(filtered_messages)}")
+    logger.info("Messages after sender whitelist: %s", len(filtered_messages))
     return filtered_messages
 
 
@@ -603,8 +609,8 @@ def fetch_sender_content_tuples() -> list[tuple[str, str]]:
             plain_text_content = util.extract_text_from_html_mail_content(html_content = content, retain_links = False)
             sender_content_pairs.append((sender, plain_text_content))
         except Exception as exc:
-            print(f"[EmailTools] Error when extracting content: {exc}")
-            print(content)
+            logger.exception("Error when extracting content: %s", exc)
+            logger.debug("Raw content that failed extraction: %s", content)
 
-    print(f"[EmailTools] Final sender/content tuple count: {len(sender_content_pairs)}")
+    logger.info("Final sender/content tuple count: %s", len(sender_content_pairs))
     return sender_content_pairs

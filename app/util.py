@@ -1,7 +1,10 @@
 from datetime import datetime
 from html import unescape
+import logging
 import pytz
 import re
+
+logger = logging.getLogger(__name__)
 
 def get_datetime_string(timezone:str = "UTC", date_format:str = "%A, %Y-%m-%d %H:%M:%S") -> str:
     """
@@ -27,7 +30,7 @@ def get_datetime_string(timezone:str = "UTC", date_format:str = "%A, %Y-%m-%d %H
     tz = pytz.timezone(timezone)
     now = datetime.now(tz)
     time_string = now.strftime(date_format)
-    print(f"[util] Generated datetime string for timezone {timezone}: {time_string}")
+    logger.debug("Generated datetime string for timezone %s: %s", timezone, time_string)
     return time_string
 
 def extract_text_from_html_mail_content(html_content:str, retain_links:bool = False) -> str:
@@ -41,10 +44,10 @@ def extract_text_from_html_mail_content(html_content:str, retain_links:bool = Fa
     Returns:
         Plain text content with HTML tags removed
     """
-    print("[util] Extracting text from HTML mail content")
+    logger.debug("Extracting text from HTML mail content")
     text_content = html_content
     if retain_links:
-        print("[util] Retaining links while extracting HTML mail content")
+        logger.debug("Retaining links while extracting HTML mail content")
 
         def replace_anchor_with_href(match:re.Match[str]) -> str:
             href_match = re.search(
@@ -66,15 +69,19 @@ def extract_text_from_html_mail_content(html_content:str, retain_links:bool = Fa
     text_content = re.sub(r"<[^<>]*>", "", text_content)
     text_content = unescape(text_content)
     text_content = re.sub(r"\s+", " ", text_content).strip()
-    print(f"[util] Extracted text content with length {len(text_content)}")
+    logger.debug("Extracted text content with length %s", len(text_content))
     return text_content
 
 if __name__ == "__main__":
+    logging.basicConfig(
+        level = logging.DEBUG,
+        format = "[%(name)s] %(message)s"
+    )
     # Example usage
-    print(get_datetime_string())  # Default UTC
-    print(get_datetime_string(timezone="US/Arizona"))
-    print(get_datetime_string(timezone="Asia/Tokyo", date_format="%Y-%m-%d %H:%M:%S %Z%z"))
-    print(get_datetime_string(date_format="%A, %Y-%m-%d %H:%M:%S"))  # Day of week included
+    logger.info("%s", get_datetime_string())  # Default UTC
+    logger.info("%s", get_datetime_string(timezone = "US/Arizona"))
+    logger.info("%s", get_datetime_string(timezone = "Asia/Tokyo", date_format = "%Y-%m-%d %H:%M:%S %Z%z"))
+    logger.info("%s", get_datetime_string(date_format = "%A, %Y-%m-%d %H:%M:%S"))  # Day of week included
 
     example_html_mail_content = """
     <html>
@@ -84,14 +91,14 @@ if __name__ == "__main__":
         </body>
     </html>
     """
-    print("[util] HTML extraction test without links:")
-    print(extract_text_from_html_mail_content(html_content = example_html_mail_content))
-    print("[util] HTML extraction test with links:")
-    print(
+    logger.info("HTML extraction test without links:")
+    logger.info("%s", extract_text_from_html_mail_content(html_content = example_html_mail_content))
+    logger.info("HTML extraction test with links:")
+    logger.info(
+        "%s",
         extract_text_from_html_mail_content(
             html_content = example_html_mail_content,
             retain_links = True
         )
     )
-
 

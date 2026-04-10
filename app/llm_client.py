@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 from typing import Any
 
 from openai import OpenAI
 
 from app.config import LlmClientConfig
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen = True)
@@ -76,9 +80,11 @@ class LlmClient:
             ToolResponseResult: Normalized response payload.
         """
 
-        print(
-            f"[LlmClient:{self._name}] Sending tool response with {len(input_items)} input items and "
-            f"{len(tools)} tools"
+        logger.info(
+            "Sending tool response client=%s input_items=%s tools=%s",
+            self._name,
+            len(input_items),
+            len(tools)
         )
 
         try:
@@ -97,10 +103,13 @@ class LlmClient:
 
         function_calls = self._extract_function_calls(response = response)
         output_items = self._normalize_output_items(response = response)
-        print(
-            f"[LlmClient:{self._name}] Received tool response. "
-            f"response_id={response.id}, output_items={len(output_items)}, "
-            f"function_calls={len(function_calls)}, text_output={response.output_text!r}"
+        logger.info(
+            "Received tool response client=%s response_id=%s output_items=%s function_calls=%s text_output=%r",
+            self._name,
+            response.id,
+            len(output_items),
+            len(function_calls),
+            response.output_text
         )
         return ToolResponseResult(
             response_id = response.id,
@@ -119,7 +128,11 @@ class LlmClient:
             Any: Responses API payload returned by the OpenAI SDK.
         """
 
-        print(f"[LlmClient:{self._name}] Sending web search response request for query: {query}")
+        logger.info(
+            "Sending web search response request client=%s query=%s",
+            self._name,
+            query
+        )
         response = self._client.responses.create(
             model = self._config.model,
             input = query,
@@ -131,9 +144,11 @@ class LlmClient:
                 }
             ]
         )
-        print(
-            f"[LlmClient:{self._name}] Received web search response. "
-            f"output_items={len(response.output)}, output_text={response.output_text!r}"
+        logger.info(
+            "Received web search response client=%s output_items=%s output_text=%r",
+            self._name,
+            len(response.output),
+            response.output_text
         )
         return response
 

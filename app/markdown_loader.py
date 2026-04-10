@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 from pathlib import Path
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen = True)
@@ -35,12 +39,12 @@ def load_markdown_documents(directory:Path) -> list[MarkdownDocument]:
     """
 
     if not directory.exists():
-        print(f"[MarkdownLoader] Directory missing: {directory}")
+        logger.debug("Directory missing: %s", directory)
         return []
 
     documents:list[MarkdownDocument] = []
     for path in sorted(directory.glob("*.md")):
-        print(f"[MarkdownLoader] Loading markdown file: {path}")
+        logger.debug("Loading markdown file: %s", path)
         documents.append(
             MarkdownDocument(
                 name = path.stem,
@@ -63,8 +67,8 @@ def load_optional_markdown(path:Path) -> str:
     """
 
     if not path.exists():
-        print(f"[MarkdownLoader] Optional markdown missing: {path}")
+        logger.debug("Optional markdown missing: %s", path)
         return ""
 
-    print(f"[MarkdownLoader] Loading optional markdown file: {path}")
+    logger.debug("Loading optional markdown file: %s", path)
     return path.read_text(encoding = "utf-8")

@@ -3,10 +3,17 @@
 # NOTE: these two have to be the first imports
 from __future__ import annotations
 import os
-if os.path.exists(".env"):
+IS_DEV_ENV = os.path.exists(".env")
+
+import logging
+logging.basicConfig(
+    level = logging.DEBUG if IS_DEV_ENV else logging.INFO,
+    format = "[%(name)s] %(message)s"
+)
+
+if IS_DEV_ENV:
     from dotenv import load_dotenv
     load_dotenv()
-
 
 from dataclasses import dataclass
 from pathlib import Path

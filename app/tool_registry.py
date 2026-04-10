@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -10,6 +11,9 @@ from typing import Any, Callable
 from app.discord_utils import DiscordChannelCategory
 from tools import build_tool_definitions
 from tools.base import ToolExecutionResult
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen = True)
@@ -46,7 +50,7 @@ class ToolRegistry:
                 markdown_publisher = markdown_publisher
             )
         }
-        print(f"[ToolRegistry] Registered tools: {', '.join(sorted(self._definitions))}")
+        logger.info("Registered tools: %s", ", ".join(sorted(self._definitions)))
 
     def get_tool_names(self) -> list[str]:
         """Return the list of supported tool names.
@@ -86,7 +90,7 @@ class ToolRegistry:
             ExecutedToolCall: Parsed arguments and execution result.
         """
 
-        print(f"[ToolRegistry] Executing tool call: {tool_name}")
+        logger.info("Executing tool call: %s", tool_name)
         definition = self._definitions.get(tool_name)
         if definition is None:
             raise ValueError(f"Unknown tool: {tool_name}")
@@ -121,5 +125,5 @@ class ToolRegistry:
         if not isinstance(parsed_arguments, dict):
             raise ValueError(f"Tool arguments for {tool_name} must be an object")
 
-        print(f"[ToolRegistry] Parsed args for {tool_name}: {parsed_arguments}")
+        logger.debug("Parsed args for %s: %s", tool_name, parsed_arguments)
         return parsed_arguments

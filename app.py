@@ -8,19 +8,9 @@ from app.agent import MarkdownAgent
 from app.discord_bot import AssistantDiscordClient
 
 
-
 def main():
-    """Run the Discord bot application.
-
-    Args:
-        None
-
-    Returns:
-        None
-    """
 
     config = load_config()
-    print("[App] Configuration loaded")
 
     if not config.discord_token:
         raise RuntimeError("DISCORD_2 or DISCORD is required")
@@ -32,7 +22,7 @@ def main():
         agent = agent,
         config = config
     )
-    print("[App] Starting Discord client")
+
     client.run(config.discord_token)
 
 

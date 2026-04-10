@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 import tempfile
 from typing import Any, Callable
 
 from app.discord_utils import DiscordChannelCategory
 from tools.base import ToolDefinition, ToolExecutionResult
+
+
+logger = logging.getLogger(__name__)
 
 
 WORKFLOWS_DIRECTORY_NAME = "workflows"
@@ -270,10 +274,10 @@ def read_markdown(
         file_path = file_path,
         project_root = project_root
     )
-    print(f"[MarkdownTools] Reading {label} file: {relative_path}")
+    logger.debug("Reading %s file: %s", label, relative_path)
 
     if not file_path.exists():
-        print(f"[MarkdownTools] Missing {label} file: {relative_path}")
+        logger.warning("Missing %s file: %s", label, relative_path)
         return ToolExecutionResult(output = f"File not found: {relative_path}")
 
     content = file_path.read_text(encoding = "utf-8")
@@ -314,7 +318,7 @@ def write_markdown(
         file_path = file_path,
         project_root = project_root
     )
-    print(f"[MarkdownTools] Writing {label} file: {relative_path}")
+    logger.info("Writing %s file: %s", label, relative_path)
 
     if not base_directory.exists():
         raise ValueError(f"Directory not found: {base_directory}")
@@ -389,7 +393,7 @@ def atomic_write_text(file_path:Path, content:str) -> None:
         None
     """
 
-    print(f"[MarkdownTools] Performing atomic write: {file_path}")
+    logger.debug("Performing atomic write: %s", file_path)
     file_path.parent.mkdir(parents = True, exist_ok = True)
 
     with tempfile.NamedTemporaryFile(
@@ -423,15 +427,17 @@ def publish_markdown_update(
     """
 
     if markdown_publisher is None:
-        print(
-            "[MarkdownTools] Skipping Discord publish because no publisher is configured "
-            f"category={category} channel_name={channel_name}"
+        logger.debug(
+            "Skipping Discord publish because no publisher is configured category=%s channel_name=%s",
+            category,
+            channel_name
         )
         return
 
-    print(
-        "[MarkdownTools] Publishing markdown update to Discord "
-        f"category={category} channel_name={channel_name}"
+    logger.info(
+        "Publishing markdown update to Discord category=%s channel_name=%s",
+        category,
+        channel_name
     )
     markdown_publisher(
         category,
@@ -463,7 +469,7 @@ def append_memory(
         project_root = project_root
     )
     normalized_memory = normalize_memory(memory = memory)
-    print(f"[MarkdownTools] Adding memory to {relative_path}: {normalized_memory}")
+    logger.info("Adding memory to %s: %s", relative_path, normalized_memory)
 
     existing_content = ""
     if memories_path.exists():
@@ -471,7 +477,7 @@ def append_memory(
 
     existing_entries = parse_memory_entries(content = existing_content)
     if normalized_memory in existing_entries:
-        print(f"[MarkdownTools] Memory already present in {relative_path}")
+        logger.info("Memory already present in %s", relative_path)
         return ToolExecutionResult(output = f"Memory already present in {relative_path}: - {normalized_memory}")
 
     appended_entry = f"- {normalized_memory}"

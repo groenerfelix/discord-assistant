@@ -18,20 +18,18 @@ from app.discord_utils import (
     split_discord_message
 )
 
+import logging
+logger = logging.getLogger(__name__)
 
 MAX_HISTORY_HOURS = 50
 MAX_HISTORY_MESSAGES = 4
 MAX_HISTORY_TOKENS = 10000
-HISTORY_FETCH_LIMIT = 50
-QUEUED_REACTION = "\N{HOURGLASS WITH FLOWING SAND}"
-THINKING_REACTION = "\N{THINKING FACE}"
-SUCCESS_REACTION = "\N{WHITE HEAVY CHECK MARK}"
-ERROR_REACTION = "\N{CROSS MARK}"
+
 STATUS_REACTIONS:dict[DiscordMessageStatus, str] = {
-    DiscordMessageStatus.QUEUED: QUEUED_REACTION,
-    DiscordMessageStatus.THINKING: THINKING_REACTION,
-    DiscordMessageStatus.SUCCESS: SUCCESS_REACTION,
-    DiscordMessageStatus.ERROR: ERROR_REACTION
+    DiscordMessageStatus.QUEUED: "\N{HOURGLASS WITH FLOWING SAND}",
+    DiscordMessageStatus.THINKING: "\N{THINKING FACE}",
+    DiscordMessageStatus.SUCCESS: "\N{WHITE HEAVY CHECK MARK}",
+    DiscordMessageStatus.ERROR: "\N{CROSS MARK}"
 }
 
 
@@ -55,10 +53,10 @@ class AssistantDiscordClient(discord.Client):
     async def daily_routine(self) -> None:
 
         if self._admin_dm_channel_id == 0:
-            print("[DiscordBot] Skipping daily routine because DISCORD_ADMIN_DM_CHANNEL_ID is not configured")
+            logger.warning("Skipping daily routine because DISCORD_ADMIN_DM_CHANNEL_ID is not configured")
             return
 
-        print("[DiscordBot] Kicking off daily routine")
+        logger.info("Kicking off daily routine")
 
         self._enqueue_synthetic_workflow(
             channel_id = self._admin_dm_channel_id,
@@ -77,40 +75,16 @@ class AssistantDiscordClient(discord.Client):
             )
             if logs_channel is not None:
                 self._logs_channel_id = logs_channel.id
-                print(f"[DiscordBot] Logs channel ready channel_id={self._logs_channel_id}")
+                logger.info("Logs channel ready channel_id=%s", self._logs_channel_id)
 
         if not self._worker_started:
             self._agent.start_worker(discord_client = self)
             self._worker_started = True
-            print("[DiscordBot] Agent worker started")
+            logger.info("Agent worker started")
 
         if not self.daily_routine.is_running():
             self.daily_routine.start()
-            print("[DiscordBot] Daily routine loop started")
-
-    # async def on_ready(self) -> None:
-    #     self._bot_loop = asyncio.get_running_loop()
-    #     print(f"[DiscordBot] Logged in as {self.user}")
-
-    #     if self._logs_channel_id is None:
-    #         logs_channel = await self.get_or_create_guild_text_channel(
-    #             guild_id = self._config.guild_id,
-    #             category_name = DiscordChannelCategory.OTHER,
-    #             channel_name = "logs"
-    #         )
-    #         if logs_channel is not None:
-    #             self._logs_channel_id = logs_channel.id
-    #             print(f"[DiscordBot] Logs channel ready channel_id={self._logs_channel_id}")
-
-    #     if not self._worker_started:
-    #         self._agent.start_worker(discord_client = self)
-    #         self._worker_started = True
-    #         print("[DiscordBot] Agent worker started")
-
-    #     if not self.daily_routine.is_running():
-    #         self.daily_routine.start()
-    #         print("[DiscordBot] Daily routine loop started")
-
+            logger.info("Daily routine loop started")
 
     async def on_message(self, message:discord.Message) -> None:
         if message.author == self.user:
@@ -127,7 +101,7 @@ class AssistantDiscordClient(discord.Client):
         if not content:
             return
 
-        print(f"[DiscordBot] Received DM from {message.author}: {content}")
+        logger.info("Received DM from %s: %s", message.author, content)
         recent_channel_history = await self._build_recent_channel_history(message = message)
         await self.update_message_status(
             channel_id = message.channel.id,
@@ -156,9 +130,10 @@ class AssistantDiscordClient(discord.Client):
             None
         """
 
-        print(
-            "[DiscordBot] Enqueuing synthetic workflow trigger "
-            f"channel_id={channel_id} content={content}"
+        logger.info(
+            "Enqueuing synthetic workflow trigger channel_id=%s content=%s",
+            channel_id,
+            content
         )
         self._agent.enqueue_message(
             QueuedDiscordMessage(
@@ -189,7 +164,7 @@ class AssistantDiscordClient(discord.Client):
         """
 
         if self._bot_loop is None:
-            print("[DiscordBot] Cannot update reactions before the bot loop is ready")
+            logger.warning("Cannot update reactions before the bot loop is ready")
             return
 
         future = asyncio.run_coroutine_threadsafe(
@@ -204,7 +179,7 @@ class AssistantDiscordClient(discord.Client):
         try:
             future.result(timeout = 30)
         except Exception as exc:
-            print(f"[DiscordBot] Failed to update message status: {exc}")
+            logger.error("Failed to update message status: %s", exc)
 
     def send_channel_message_threadsafe(self, channel_id:int, content:str) -> None:
         """Schedule a channel send from a worker thread.
@@ -218,7 +193,7 @@ class AssistantDiscordClient(discord.Client):
         """
 
         if self._bot_loop is None:
-            print("[DiscordBot] Cannot send messages before the bot loop is ready")
+            logger.warning("Cannot send messages before the bot loop is ready")
             return
 
         future = asyncio.run_coroutine_threadsafe(
@@ -232,7 +207,7 @@ class AssistantDiscordClient(discord.Client):
         try:
             future.result(timeout = 30)
         except Exception as exc:
-            print(f"[DiscordBot] Failed to send channel message: {exc}")
+            logger.error("Failed to send channel message: %s", exc)
 
     def send_logs_message_threadsafe(self, content:str) -> None:
         """Schedule a raw execution log send from a worker thread.
@@ -245,7 +220,7 @@ class AssistantDiscordClient(discord.Client):
         """
 
         if self._bot_loop is None:
-            print("[DiscordBot] Cannot send logs before the bot loop is ready")
+            logger.warning("Cannot send logs before the bot loop is ready")
             return
 
         future = asyncio.run_coroutine_threadsafe(
@@ -256,7 +231,7 @@ class AssistantDiscordClient(discord.Client):
         try:
             future.result(timeout = 30)
         except Exception as exc:
-            print(f"[DiscordBot] Failed to send logs message: {exc}")
+            logger.error("Failed to send logs message: %s", exc)
 
     def send_guild_channel_message_threadsafe(
         self,
@@ -278,7 +253,7 @@ class AssistantDiscordClient(discord.Client):
         """
 
         if self._bot_loop is None:
-            print("[DiscordBot] Cannot send guild channel messages before the bot loop is ready")
+            logger.warning("Cannot send guild channel messages before the bot loop is ready")
             return
 
         future = asyncio.run_coroutine_threadsafe(
@@ -294,7 +269,7 @@ class AssistantDiscordClient(discord.Client):
         try:
             future.result(timeout = 30)
         except Exception as exc:
-            print(f"[DiscordBot] Failed to send guild channel message: {exc}")
+            logger.error("Failed to send guild channel message: %s", exc)
 
     async def update_message_status(
         self,
@@ -317,9 +292,10 @@ class AssistantDiscordClient(discord.Client):
             raise ValueError(f"Unknown Discord message status: {status}")
 
         if message_id is None:
-            print(
-                "[DiscordBot] Skipping reaction update because no Discord message id was provided "
-                f"channel_id={channel_id} status={status}"
+            logger.debug(
+                "Skipping reaction update because no Discord message id was provided channel_id=%s status=%s",
+                channel_id,
+                status
             )
             return
 
@@ -330,9 +306,11 @@ class AssistantDiscordClient(discord.Client):
         if message is None or self.user is None:
             return
 
-        print(
-            "[DiscordBot] Updating reactions "
-            f"message_id={message_id} channel_id={channel_id} status={status}"
+        logger.debug(
+            "Updating reactions message_id=%s channel_id=%s status=%s",
+            message_id,
+            channel_id,
+            status
         )
         
         await self._safe_add_reaction(
@@ -364,13 +342,13 @@ class AssistantDiscordClient(discord.Client):
         if channel is None:
             return
 
-        print(f"[DiscordBot] Sending channel message channel_id={channel_id}")
+        logger.info("Sending channel message channel_id=%s", channel_id)
 
         for content_chunk in split_discord_message(content = content):
             try:
                 await channel.send(content_chunk)
             except discord.HTTPException as exc:
-                print(f"[DiscordBot] Failed to send channel message: {exc}")
+                logger.error("Failed to send channel message: %s", exc)
                 return
 
     async def send_logs_message(self, content:str) -> None:
@@ -384,7 +362,7 @@ class AssistantDiscordClient(discord.Client):
         """
 
         if self._logs_channel_id is None:
-            print("[DiscordBot] Logs channel is unavailable")
+            logger.warning("Logs channel is unavailable")
             return
 
         for message_chunk in self._build_logs_messages(content = content):
@@ -410,7 +388,7 @@ class AssistantDiscordClient(discord.Client):
         try:
             channel = await self.fetch_channel(channel_id)
         except discord.HTTPException as exc:
-            print(f"[DiscordBot] Failed to fetch channel {channel_id}: {exc}")
+            logger.error("Failed to fetch channel %s: %s", channel_id, exc)
             return None
 
         return channel
@@ -468,15 +446,20 @@ class AssistantDiscordClient(discord.Client):
             channel_name = channel_name
         )
         if channel is None:
-            print(
-                "[DiscordBot] Guild channel is unavailable "
-                f"guild_id={guild_id} category_name={category_name} channel_name={channel_name}"
+            logger.warning(
+                "Guild channel is unavailable guild_id=%s category_name=%s channel_name=%s",
+                guild_id,
+                category_name,
+                channel_name
             )
             return
 
-        print(
-            "[DiscordBot] Sending guild channel message "
-            f"guild_id={guild_id} category_name={category_name} channel_name={channel_name} channel_id={channel.id}"
+        logger.info(
+            "Sending guild channel message guild_id=%s category_name=%s channel_name=%s channel_id=%s",
+            guild_id,
+            category_name,
+            channel_name,
+            channel.id
         )
         await self.send_channel_message(
             channel_id = channel.id,
@@ -501,9 +484,9 @@ class AssistantDiscordClient(discord.Client):
         """
 
         if guild_id == 0:
-            print(
-                "[DiscordBot] Skipping text channel lookup because GUILD_ID is not configured "
-                f"channel_name={channel_name}"
+            logger.warning(
+                "Skipping text channel lookup because GUILD_ID is not configured channel_name=%s",
+                channel_name
             )
             return None
 
@@ -529,16 +512,20 @@ class AssistantDiscordClient(discord.Client):
                 and guild_channel.name == channel_name
                 and guild_channel.category_id == category_channel.id
             ):
-                print(
-                    "[DiscordBot] Found existing text channel "
-                    f"guild_id={guild_id} category_name={category_name} "
-                    f"channel_name={channel_name} channel_id={guild_channel.id}"
+                logger.debug(
+                    "Found existing text channel guild_id=%s category_name=%s channel_name=%s channel_id=%s",
+                    guild_id,
+                    category_name,
+                    channel_name,
+                    guild_channel.id
                 )
                 return guild_channel
 
-        print(
-            "[DiscordBot] Creating missing text channel "
-            f"guild_id={guild_id} category_name={category_name} channel_name={channel_name}"
+        logger.info(
+            "Creating missing text channel guild_id=%s category_name=%s channel_name=%s",
+            guild_id,
+            category_name,
+            channel_name
         )
         try:
             return await guild.create_text_channel(
@@ -547,15 +534,21 @@ class AssistantDiscordClient(discord.Client):
                 reason = f"Auto-created by Discord assistant for {category_name}/{channel_name}"
             )
         except discord.Forbidden as exc:
-            print(
-                "[DiscordBot] Missing permission to create channel. "
-                f"The bot needs Manage Channels for {category_name}/{channel_name} in guild {guild_id}: {exc}"
+            logger.error(
+                "Missing permission to create channel. The bot needs Manage Channels for %s/%s in guild %s: %s",
+                category_name,
+                channel_name,
+                guild_id,
+                exc
             )
             return None
         except discord.HTTPException as exc:
-            print(
-                "[DiscordBot] Failed to create channel "
-                f"{category_name}/{channel_name} in guild {guild_id}: {exc}"
+            logger.error(
+                "Failed to create channel %s/%s in guild %s: %s",
+                category_name,
+                channel_name,
+                guild_id,
+                exc
             )
             return None
 
@@ -573,11 +566,11 @@ class AssistantDiscordClient(discord.Client):
         if guild is not None:
             return guild
 
-        print(f"[DiscordBot] Guild {guild_id} was not found in cache, fetching from API")
+        logger.info("Guild %s was not found in cache, fetching from API", guild_id)
         try:
             return await self.fetch_guild(guild_id)
         except discord.HTTPException as exc:
-            print(f"[DiscordBot] Failed to fetch guild {guild_id}: {exc}")
+            logger.error("Failed to fetch guild %s: %s", guild_id, exc)
             return None
 
     async def _fetch_guild_channels(
@@ -596,13 +589,14 @@ class AssistantDiscordClient(discord.Client):
         try:
             return await guild.fetch_channels()
         except discord.Forbidden as exc:
-            print(
-                "[DiscordBot] Missing permission to fetch guild channels. "
-                f"The bot needs View Channels in guild {guild.id}: {exc}"
+            logger.error(
+                "Missing permission to fetch guild channels. The bot needs View Channels in guild %s: %s",
+                guild.id,
+                exc
             )
             return None
         except discord.HTTPException as exc:
-            print(f"[DiscordBot] Failed to fetch channels for guild {guild.id}: {exc}")
+            logger.error("Failed to fetch channels for guild %s: %s", guild.id, exc)
             return None
 
     async def _get_or_create_category_channel(
@@ -624,15 +618,18 @@ class AssistantDiscordClient(discord.Client):
 
         for guild_channel in guild_channels:
             if isinstance(guild_channel, discord.CategoryChannel) and guild_channel.name == category_name.value:
-                print(
-                    "[DiscordBot] Found existing category "
-                    f"guild_id={guild.id} category_name={category_name} category_id={guild_channel.id}"
+                logger.debug(
+                    "Found existing category guild_id=%s category_name=%s category_id=%s",
+                    guild.id,
+                    category_name,
+                    guild_channel.id
                 )
                 return guild_channel
 
-        print(
-            "[DiscordBot] Creating missing category "
-            f"guild_id={guild.id} category_name={category_name}"
+        logger.info(
+            "Creating missing category guild_id=%s category_name=%s",
+            guild.id,
+            category_name
         )
         try:
             return await guild.create_category(
@@ -640,15 +637,19 @@ class AssistantDiscordClient(discord.Client):
                 reason = f"Auto-created by Discord assistant for {category_name}"
             )
         except discord.Forbidden as exc:
-            print(
-                "[DiscordBot] Missing permission to create category. "
-                f"The bot needs Manage Channels for {category_name} in guild {guild.id}: {exc}"
+            logger.error(
+                "Missing permission to create category. The bot needs Manage Channels for %s in guild %s: %s",
+                category_name,
+                guild.id,
+                exc
             )
             return None
         except discord.HTTPException as exc:
-            print(
-                "[DiscordBot] Failed to create category "
-                f"{category_name} in guild {guild.id}: {exc}"
+            logger.error(
+                "Failed to create category %s in guild %s: %s",
+                category_name,
+                guild.id,
+                exc
             )
             return None
 
@@ -665,13 +666,13 @@ class AssistantDiscordClient(discord.Client):
 
         channel = await self._fetch_channel(channel_id = channel_id)
         if channel is None or not hasattr(channel, "fetch_message"):
-            print(f"[DiscordBot] Channel {channel_id} cannot fetch messages")
+            logger.warning("Channel %s cannot fetch messages", channel_id)
             return None
 
         try:
             return await channel.fetch_message(message_id)
         except discord.HTTPException as exc:
-            print(f"[DiscordBot] Failed to fetch message {message_id}: {exc}")
+            logger.error("Failed to fetch message %s: %s", message_id, exc)
             return None
 
     async def _safe_add_reaction(self, message:discord.Message, reaction:str) -> None:
@@ -688,7 +689,7 @@ class AssistantDiscordClient(discord.Client):
         try:
             await message.add_reaction(reaction)
         except discord.HTTPException as exc:
-            print(f"[DiscordBot] Failed to add reaction {reaction}: {exc}")
+            logger.error("Failed to add reaction %s: %s", reaction, exc)
 
     async def _safe_remove_reaction(self, message:discord.Message, reaction:str) -> None:
         """Remove one bot-owned reaction while swallowing Discord transport errors.
@@ -722,7 +723,7 @@ class AssistantDiscordClient(discord.Client):
         cutoff_time = message.created_at - timedelta(hours = MAX_HISTORY_HOURS)
         formatted_messages:list[str] = []
 
-        print(f"[DiscordBot] Fetching up to {MAX_HISTORY_MESSAGES} recent messages from the same channel")
+        logger.debug("Fetching up to %s recent messages from the same channel", MAX_HISTORY_MESSAGES)
         async for historical_message in message.channel.history(
             limit = MAX_HISTORY_MESSAGES,
             before = message.created_at,
@@ -747,17 +748,17 @@ class AssistantDiscordClient(discord.Client):
                 break
 
         if not formatted_messages:
-            print("[DiscordBot] No qualifying channel history found")
+            logger.debug("No qualifying channel history found")
             return ""
 
         while self._estimate_token_count(messages = formatted_messages) > MAX_HISTORY_TOKENS:
             removed_message = formatted_messages.pop(0)
-            print(
-                "[DiscordBot] Dropped oldest history message to stay within token budget: "
-                f"{removed_message[:80]}"
+            logger.debug(
+                "Dropped oldest history message to stay within token budget: %s",
+                removed_message[:80]
             )
 
-        print(f"[DiscordBot] Prepared {len(formatted_messages)} history messages for the agent")
+        logger.debug("Prepared %s history messages for the agent", len(formatted_messages))
         return "\n\n".join(formatted_messages)
 
     def _estimate_token_count(self, messages:list[str]) -> int:
@@ -829,8 +830,6 @@ class AssistantDiscordClient(discord.Client):
             return f"{minutes}m"
 
         return "0m"
-
-
 
 
 

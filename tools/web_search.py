@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import logging
+import os
 from typing import Any
 
 from tools.base import ToolDefinition, ToolExecutionResult
 
 from app.llm_client import LlmClient, LlmClientConfig
-import os
+
+
+logger = logging.getLogger(__name__)
 
 LLM_SEARCH_CLIENT = LlmClient(
     config = LlmClientConfig(
@@ -74,17 +78,17 @@ def perform_web_search(query:str) -> str:
         str: Search response text or an error message.
     """
 
-    print(f"[WebSearch] Searching the web for: {query}")
+    logger.info("Searching the web for: %s", query)
 
     try:
         response = LLM_SEARCH_CLIENT.create_web_search_response(query = query)
     except Exception as e:
-        print(f"[WebSearch] Error during web search: {e}")
+        logger.error("Error during web search: %s", e)
         return f"Sorry, I couldn't perform the web search at this time. Pass this error message to the user: {e}"
 
     response_text = (response.output_text or "").strip()
     if not response_text:
-        print("[WebSearch] No response text returned")
+        logger.warning("No response text returned")
         return f"No web results found for: {query}"
 
     source_urls:list[str] = []

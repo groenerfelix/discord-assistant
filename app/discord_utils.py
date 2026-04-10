@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from enum import StrEnum
+import logging
 
 
 DISCORD_MESSAGE_CHARACTER_LIMIT = 2000
+logger = logging.getLogger(__name__)
 
 
 class DiscordChannelCategory(StrEnum):
@@ -48,9 +50,10 @@ def split_discord_message(
     if len(content) <= max_length:
         return [content]
 
-    print(
-        "[DiscordUtils] Splitting Discord message "
-        f"length={len(content)} max_length={max_length}"
+    logger.debug(
+        "Splitting Discord message length=%s max_length=%s",
+        len(content),
+        max_length
     )
 
     chunks:list[str] = []
@@ -72,7 +75,7 @@ def split_discord_message(
     if remaining_content:
         chunks.append(remaining_content)
 
-    print(f"[DiscordUtils] Split into {len(chunks)} chunk(s)")
+    logger.debug("Split into %s chunk(s)", len(chunks))
     return chunks
 
 

@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+import logging
+
 from tools.base import ToolDefinition, ToolExecutionResult
+
+
+logger = logging.getLogger(__name__)
 
 
 SEND_MESSAGE_PARAMETERS = {
@@ -39,7 +44,7 @@ def build_messaging_tool_definitions() -> list[ToolDefinition]:
     def send_message(arguments:dict) -> ToolExecutionResult:
         message = str(arguments["message"])
         is_terminal = bool(arguments.get("is_terminal", True))
-        print(f"[MessagingTools] Sending Discord message. is_terminal={is_terminal}")
+        logger.info("Sending Discord message. is_terminal=%s", is_terminal)
         return ToolExecutionResult(
             output = "Successfully sent Discord message",
             outbound_message = message,
