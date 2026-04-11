@@ -60,7 +60,7 @@ class AssistantDiscordClient(discord.Client):
 
         self._enqueue_synthetic_workflow(
             channel_id = self._admin_dm_channel_id,
-            content = "This is an autmated reminder for you to start my morning routine workflow."
+            content = "This is an autmated reminder for you to start my morning routine workflow. Do not acknowledge this message. Just produce the final message."
         )
 
 

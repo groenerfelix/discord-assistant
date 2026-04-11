@@ -69,6 +69,12 @@ def extract_text_from_html_mail_content(html_content:str, retain_links:bool = Fa
     text_content = re.sub(r"<[^<>]*>", "", text_content)
     text_content = unescape(text_content)
     text_content = re.sub(r"\s+", " ", text_content).strip()
+
+    # Filter weird encodings (mostly found in LinkedIn emails)
+    words = text_content.split()
+    words = [word for word in words if not "\\\\" in word]
+    text_content = " ".join(words)
+    
     logger.debug("Extracted text content with length %s", len(text_content))
     return text_content
 

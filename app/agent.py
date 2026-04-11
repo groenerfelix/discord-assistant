@@ -1081,27 +1081,3 @@ class MarkdownAgent:
 
         log_path.write_text("\n".join(log_lines), encoding = "utf-8")
         logger.info("Wrote interaction log to %s", log_path)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

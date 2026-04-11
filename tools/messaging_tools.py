@@ -15,7 +15,7 @@ SEND_MESSAGE_PARAMETERS = {
     "properties": {
         "message": {
             "type": "string",
-            "description": "User-facing Discord message to send immediately."
+            "description": "User-facing Discord message, formatted in correct markdown."
         },
         "is_terminal": {
             "type": "boolean",

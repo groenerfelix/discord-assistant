@@ -1,40 +1,119 @@
 # Markdown-Driven Discord Assistant
 
-This repository contains a minimal prototype for a self-evolving assistant that is configured through markdown workflows and code-defined tools.
+This project is an autonomous Discord assistant whose "brain" lives mostly in markdown.
 
-## Structure
 
-- `app/`: Python runtime code
-- `prompts/`: Core agent instructions
-- `workflows/`: Markdown workflow definitions
-- `tools/`: Code-based tool implementations grouped by concern
-- `data/`: Data storage
+## Features
 
-## Environment
+### Markdown-driven agent with minimal code
 
-Set these environment variables before running:
+Instead of baking behaviour into application code, most logic and data lives in markdown files. The agent can read and write workflows and data. This makes the assistant easy to evolve: Simply prompt it to add new behaviours! The Python runtime stays focused on orchestration, Discord integration, and safe tool execution.
 
-- `DISCORD` bot token
-- `GUILD_ID` optional guild id used for server-side status/log channels
-- `DISCORD_ADMIN_ID` single, whitelisted user id
-- `OPENAI` OpenAI API key used by the web search tool
-- `LLM_API_KEY` optional core agent API key, falls back to `OPENAI`
-- `LLM_MODEL` optional core agent model, defaults to `gpt-5-mini`
-- `LLM_API_BASE_URL` optional base URL for the core agent's OpenAI-compatible provider
-- `AGENT_MAX_STEPS` optional, defaults to `5`
+- The agent creates and edits **worklow and data files** with read/write tools.
+- Restricted prompt components (e.g., **personality**) are injected in every system prompt.
+- **Tool calling** allows the agent to read emails, search the web, and send discord messages.
 
-## Run
+### Discord interface
+
+This agent interfaces with discord to receive instructions, send responses, and make the agent state transparent. Interaction primary happens in direct messages but backend states are published in a discord server.
+
+At runtime, the bot listens for direct messages from one allowed Discord user, turns each message into a workflow run, and lets the model work through the request with strict tool calls.
+
+Current capabilities include:
+
+- Discord reactions indicate progress (⏳ -> 🤔 -> ✅/❌)
+- Updates to workflows and data are sent in discord channels that are automatically created for each markdown file and organised in categories.
+- All message history is put into a dedicated logs channel.
+- Workflow can be scheduled by adding a discord task routine that queues an automated message. 
+
+
+## Repository Structure
+
+### Runtime code
+
+- `app.py`: main entrypoint that loads config, builds the agent, and starts the Discord client.
+- `app/agent.py`: the core workflow loop, queue handling, prompt assembly, tool execution, and transcript logging.
+- `app/discord_bot.py`: Discord client, DM intake, reactions, channel creation, history gathering, and scheduled jobs.
+- `app/llm_client.py`: thin wrapper around the OpenAI-compatible Responses API.
+- `app/tool_registry.py`: registers tools and dispatches model-emitted tool calls.
+- `app/config.py`: environment loading and runtime configuration.
+- `app/discord_utils.py`, `app/markdown_loader.py`, `app/util.py`: shared helpers.
+
+### Markdown-driven behaviour
+
+- `prompts/core.md`: global operating instructions for the assistant.
+- `prompts/persona.md`: optional personality and response-style prompt.
+- `prompts/memories.md`: durable memory bullets the assistant can append to.
+- `workflows/`: reusable markdown workflows that define how a task should be handled.
+- `data/`: markdown files that act as the assistant's editable state.
+
+Current examples in the repo include calendar and to-do workflows, plus markdown data files such as `data/todo.md`, `data/calendar.md`, and `data/gifs.md`.
+
+### Tools
+
+- `tools/markdown_tools.py`: constrained read/write access for markdown workflows, data, and memories.
+- `tools/messaging_tools.py`: lets the model send Discord replies and optionally end the workflow.
+- `tools/web_search.py`: OpenAI-powered web search.
+- `tools/email_tools.py`: Email integration to retrieve the last 24hr inbox.
+
+
+## Setup
+
+### 1. Create a Python environment and install dependencies
 
 ```powershell
+python -m venv venv
+.\venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-python -m app.app
 ```
 
-## Current scope
+If you want the app to load variables from a local `.env` file, also install `python-dotenv`:
 
-- Direct messages trigger the core workflow loop
-- The agent is instructed by markdown prompts and workflows
-- Tools are registered with strict function schemas and executed through OpenAI tool calling
-- Workflow/data tools are constrained by filename and semantic area instead of arbitrary paths
-- The first workflow manages `data/todo.md`
-- The loop ends only when the model calls `send_message` or the hard step limit is reached
+```powershell
+pip install python-dotenv
+```
+
+### 2. Configure environment variables
+
+Discord integration
+- `DISCORD`: Discord bot token with the appropriate scope.
+- `DISCORD_ADMIN_ID`: the only user ID whose DMs will be processed.
+- `DISCORD_ADMIN_DM_CHANNEL_ID`: DM channel used by the scheduled daily routine.
+- `GUILD_ID`: Discord server ID used for mirrored channels.
+
+LLM agent
+- `OPENAI`: OpenAI API key for the dedicated web search tool.
+- `LLM_API_KEY` API key for the main agent model if not OpenAI.
+- `LLM_API_BASE_URL`: base URL for an OpenAI-compatible provider if not OpenAI.
+- `LLM_MODEL`: model name for the main agent.
+- `AGENT_MAX_STEPS`: hard limit for workflow turns.
+- `TIMEZONE`: timezone string used in the generated prompt context.
+
+Zoho email integration 
+- `ZOHO_ID` and `ZOHO_TOKEN` of the application, 
+- `ZOHO_MAIL_ACCESS` or `ZOHO_MAIL_REFRESH` or `ZOHO_MAIL_GRANT` for the permission token with read mail scope,
+- `ZOHO_ACC_ID` and `ZOHO_FOLDER_ID` of the inbox user, 
+- `ZOHO_SENDER_WHITELIST`, a comma-separated list of allowed senders
+
+### 3. Prepare your markdown assets
+
+Before running the bot, review:
+
+- review `prompts/core.md` for global operating rules
+- create `prompts/persona.md` for tone/personality/character
+
+This is the main design surface of the project. Most behaviour changes should happen here, not in Python.
+
+### 5. Run the assistant
+
+```powershell
+python app.py
+```
+
+## Notes
+
+- The bot currently processes direct messages only.
+- Only one allowed user is supported out of the box.
+- Markdown writes are full rewrites, not partial patches.
+- The assistant keeps recent conversation context for a channel and resets retained history after 30 minutes of inactivity or when the channel changes.
+- Raw execution payloads are mirrored to Discord for debugging, so use this carefully with private data.
