@@ -21,7 +21,7 @@ from app.discord_utils import (
 import logging
 logger = logging.getLogger(__name__)
 
-MAX_HISTORY_HOURS = 50
+MAX_HISTORY_HOURS = 12
 MAX_HISTORY_MESSAGES = 4
 MAX_HISTORY_TOKENS = 10000
 

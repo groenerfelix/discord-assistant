@@ -93,7 +93,8 @@ class LlmClient:
                 instructions = instructions,
                 input = input_items,
                 tools = tools,
-                parallel_tool_calls = False
+                parallel_tool_calls = True,
+                reasoning="low"
             )
         except Exception as exc:
             provider_error_message = self._build_provider_error_message(exc = exc)
