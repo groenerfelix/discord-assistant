@@ -228,12 +228,12 @@ class HtmlToText(HTMLParser):
         self._append(re.sub(r"\s+", " ", data))
 
 
-def extract_text_from_html_mail_content(html_text: str, retain_links: bool = False) -> str:
-    html_text = ANSI_RE.sub("", html_text)
-    html_text = html_text.replace("\r\n", "\n").replace("\r", "\n")
+def extract_text_from_html_mail_content(html_content: str, retain_links: bool = False) -> str:
+    html_content = ANSI_RE.sub("", html_content)
+    html_content = html_content.replace("\r\n", "\n").replace("\r", "\n")
 
     parser = HtmlToText(retain_links = retain_links)
-    parser.feed(html_text)
+    parser.feed(html_content)
     parser.close()
 
     text = "".join(parser.parts)
@@ -306,12 +306,12 @@ if __name__ == "__main__":
     </html>
     """
     logger.info("HTML extraction test without links:")
-    logger.info("%s", extract_text_from_html_mail_content(html_text = example_html_mail_content))
+    logger.info("%s", extract_text_from_html_mail_content(html_content = example_html_mail_content))
     logger.info("HTML extraction test with links:")
     logger.info(
         "%s",
         extract_text_from_html_mail_content(
-            html_text = example_html_mail_content,
+            html_content = example_html_mail_content,
             retain_links = True
         )
     )
