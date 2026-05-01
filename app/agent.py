@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections import deque
 from dataclasses import dataclass, field, fields as dataclass_fields, is_dataclass
 from datetime import datetime, timedelta, timezone
@@ -14,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 
 from agents import (
     Agent,
+    ItemHelpers,
     RunConfig,
     Runner,
     WebSearchTool,
@@ -465,20 +467,15 @@ class MarkdownAgent:
             sent_messages = workflow_state.sent_messages
         )
         agent = self._build_agent(instructions = workflow_state.instructions)
-        result = Runner.run_sync(
-            agent,
-            workflow_state.messages,
-            context = runtime_context,
-            max_turns = self._config.max_agent_steps,
-            run_config = RunConfig(
-                workflow_name = "discord-assistant",
-                group_id = str(workflow_state.channel_id),
-                trace_include_sensitive_data = False
+        result, streamed_text_messages = asyncio.run(
+            self._run_streamed_agent(
+                agent = agent,
+                workflow_state = workflow_state,
+                runtime_context = runtime_context
             )
         )
         workflow_state.steps_used += max(1, len(result.raw_responses))
         workflow_state.last_activity_at = datetime.now(timezone.utc)
-        result.release_agents()
 
         final_message = str(result.final_output or "").strip()
         if not final_message:
@@ -499,18 +496,119 @@ class MarkdownAgent:
             assistant_message = final_message
         )
 
-        logger.info("Sending final agent output to Discord")
-        self._send_discord_message(
-            channel_id = workflow_state.channel_id,
-            content = final_message
-        )
-        workflow_state.sent_messages.append(final_message)
+        if not streamed_text_messages:
+            logger.info("No streamed agent text response was sent; sending final output fallback")
+            self._send_agent_text_message(
+                workflow_state = workflow_state,
+                text_message = final_message
+            )
+
+        result.release_agents()
 
         return WorkflowStepResult(
             status = "terminal",
             termination_reason = "agent_final_output",
             final_message = final_message
         )
+
+    async def _run_streamed_agent(
+        self,
+        agent:Agent[AgentRuntimeContext],
+        workflow_state:ActiveWorkflowState,
+        runtime_context:AgentRuntimeContext
+    ) -> tuple[Any, list[str]]:
+        """Run the SDK agent and publish message events as they arrive.
+
+        Args:
+            agent: Configured Agents SDK agent.
+            workflow_state: Current workflow state receiving streamed text.
+            runtime_context: Runtime context passed to SDK tools.
+
+        Returns:
+            tuple[Any, list[str]]: The streaming run result and sent assistant texts.
+        """
+
+        result = Runner.run_streamed(
+            agent,
+            workflow_state.messages,
+            context = runtime_context,
+            max_turns = self._config.max_agent_steps,
+            run_config = RunConfig(
+                workflow_name = "discord-assistant",
+                group_id = str(workflow_state.channel_id),
+                trace_include_sensitive_data = False
+            )
+        )
+        streamed_text_messages:list[str] = []
+
+        async for event in result.stream_events():
+            text_message = self._extract_streamed_agent_text_message(event = event)
+            if not text_message:
+                continue
+
+            self._send_agent_text_message(
+                workflow_state = workflow_state,
+                text_message = text_message
+            )
+            streamed_text_messages.append(text_message)
+
+        logger.info(
+            "Completed streamed agent run text_responses=%s",
+            len(streamed_text_messages)
+        )
+        return result, streamed_text_messages
+
+    def _extract_streamed_agent_text_message(self, event:Any) -> str:
+        """Extract one assistant text message from a streaming SDK event.
+
+        Args:
+            event: Agents SDK stream event.
+
+        Returns:
+            str: Assistant text content, or an empty string for non-message events.
+        """
+
+        if getattr(event, "type", "") != "run_item_stream_event":
+            return ""
+
+        if getattr(event, "name", "") != "message_output_created":
+            return ""
+
+        item = getattr(event, "item", None)
+        if getattr(item, "type", "") != "message_output_item":
+            return ""
+
+        try:
+            return ItemHelpers.text_message_output(item).strip()
+        except Exception:
+            logger.exception("Failed to extract text from streamed agent message")
+            return ""
+
+    def _send_agent_text_message(
+        self,
+        workflow_state:ActiveWorkflowState,
+        text_message:str
+    ) -> None:
+        """Send one assistant text response to Discord and record it for logs.
+
+        Args:
+            workflow_state: Current workflow state receiving the text response.
+            text_message: Assistant text message to publish.
+
+        Returns:
+            None
+        """
+
+        if not text_message:
+            logger.warning("Skipping empty agent text response")
+            return
+
+        logger.info("Sending streamed agent text response to Discord")
+        self._send_discord_message(
+            channel_id = workflow_state.channel_id,
+            content = text_message
+        )
+        workflow_state.sent_messages.append(text_message)
 
     def _build_agent_success_log(
         self,

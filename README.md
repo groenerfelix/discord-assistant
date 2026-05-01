@@ -11,7 +11,7 @@ Instead of baking behaviour into application code, most logic and data lives in 
 
 - The agent creates and edits **worklow and data files** with read/write tools.
 - Restricted prompt components (e.g., **personality**) are injected in every system prompt.
-- **Tool calling** allows the agent to read emails, search the web, and send discord messages.
+- **Tool calling** allows the agent to read emails, search the web, and update markdown state. Assistant text is sent to Discord automatically.
 
 ### Discord interface
 
@@ -52,7 +52,6 @@ Current examples in the repo include calendar and to-do workflows, plus markdown
 ### Tools
 
 - `tools/markdown_tools.py`: constrained read/write access for markdown workflows, data, and memories.
-- `tools/messaging_tools.py`: lets the model send Discord replies and optionally end the workflow.
 - Hosted web search is attached directly to the main OpenAI Agents SDK agent.
 - `tools/email_tools.py`: Email integration to retrieve the last 24hr inbox and process it through explicit instructions supplied by the main agent.
 

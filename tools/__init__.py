@@ -10,7 +10,6 @@ from app.discord_utils import DiscordChannelCategory
 from tools.base import ToolDefinition
 from tools.email_tools import build_email_tool_definitions
 from tools.markdown_tools import build_markdown_tool_definitions
-from tools.messaging_tools import build_messaging_tool_definitions
 
 
 def build_tool_definitions(
@@ -38,5 +37,4 @@ def build_tool_definitions(
             project_root = project_root,
             llm_config = llm_config
         ),
-        *build_messaging_tool_definitions()
     ]
