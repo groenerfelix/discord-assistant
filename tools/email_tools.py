@@ -7,6 +7,7 @@ import app.util as util
 import json
 import logging
 import os
+from pathlib import Path
 from typing import Any
 
 import requests
@@ -17,6 +18,8 @@ try:
 except ImportError:
     logging.getLogger(__name__).debug("python-dotenv is not installed, skipping .env loading")
 
+from app.config import LlmClientConfig
+from app.content_processor import process_content_with_instructions
 from tools.base import ToolDefinition, ToolExecutionResult
 
 
@@ -28,8 +31,19 @@ MAIL_API_BASE_URL = "https://mail.zoho.com/api"
 PAGE_SIZE = 200
 FETCH_RECENT_EMAILS_PARAMETERS:dict[str, Any] = {
     "type": "object",
-    "properties": {},
-    # "required": [],
+    "properties": {
+        "instructions": {
+            "type": "string",
+            "description": (
+                "Instructions for processing the fetched emails. Include what to filter for "
+                "or ignore, what the user is looking for, which details to keep, which details "
+                "to omit, and the desired response format. Example: find new publications and "
+                "job offers, keep titles/authors/links/company/location, omit newsletters "
+                "without relevant items, and return short grouped paragraphs."
+            )
+        }
+    },
+    "required": ["instructions"],
     "additionalProperties": False
 }
 
@@ -136,20 +150,31 @@ class AccessTokenManager:
         return self.access_token
 
 
-def build_email_tool_definitions() -> list[ToolDefinition]:
+def build_email_tool_definitions(
+    project_root:Path,
+    llm_config:LlmClientConfig
+) -> list[ToolDefinition]:
     """Build email-oriented tool definitions.
 
     Args:
-        None
+        project_root: Root directory of the project workspace.
+        llm_config: Main agent LLM configuration used for email processing.
 
     Returns:
         list[ToolDefinition]: Email tool definitions.
     """
 
     def fetch_recent_emails(arguments:dict[str, Any]) -> ToolExecutionResult:
-        logger.info("Running fetch_recent_emails with args: %s", arguments)
+        instructions = str(arguments.get("instructions", "")).strip()
+        if not instructions:
+            raise ValueError("Email processing instructions must not be empty")
+
+        logger.info(
+            "Running fetch_recent_emails instructions_chars=%s",
+            len(instructions)
+        )
         sender_content_pairs = fetch_sender_content_tuples()
-        output = {
+        email_payload = {
             "messageCount": len(sender_content_pairs),
             "messages": [
                 {
@@ -159,13 +184,25 @@ def build_email_tool_definitions() -> list[ToolDefinition]:
                 for sender, content in sender_content_pairs
             ]
         }
-        return ToolExecutionResult(output = json.dumps(output, indent = 2))
+        serialized_payload = json.dumps(
+            email_payload,
+            indent = 2,
+            ensure_ascii = False
+        )
+        processed_output = process_content_with_instructions(
+            config = llm_config,
+            content_label = "recent_email_messages",
+            content_payload = serialized_payload,
+            instructions = instructions
+        )
+        return ToolExecutionResult(output = processed_output)
 
     return [
         ToolDefinition(
             name = "fetch_recent_emails",
             description = (
-                "Fetch recent emails and return a list of sender plus cleaned plain-text content."
+                "Fetch recent emails and process them according to explicit instructions "
+                "provided by the main agent."
             ),
             parameters = FETCH_RECENT_EMAILS_PARAMETERS,
             handler = fetch_recent_emails
@@ -366,6 +403,7 @@ def extract_sender_address(message:dict[str, Any]) -> str:
         return sender.split("<", 1)[1].split(">", 1)[0].strip().lower()
 
     return sender.lower()
+
 
 def perform_get_with_auto_refresh(
     url:str,
@@ -606,7 +644,10 @@ def fetch_sender_content_tuples() -> list[tuple[str, str]]:
         )
 
         try:
-            plain_text_content = util.extract_text_from_html_mail_content(html_content = content, retain_links = False)
+            plain_text_content = util.extract_text_from_html_mail_content(
+                html_content = content,
+                retain_links = False
+            )
             sender_content_pairs.append((sender, plain_text_content))
         except Exception as exc:
             logger.exception("Error when extracting content: %s", exc)

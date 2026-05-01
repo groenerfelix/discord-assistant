@@ -13,7 +13,6 @@ class ToolExecutionResult:
     Args:
         output: Human-readable output to feed back into the agent loop.
         outbound_message: Optional Discord-visible message to send immediately.
-        is_terminal: Whether this tool ends the workflow.
 
     Returns:
         ToolExecutionResult: Tool execution metadata.
@@ -21,7 +20,6 @@ class ToolExecutionResult:
 
     output:str
     outbound_message:str | None = None
-    is_terminal:bool = False
 
 
 @dataclass(frozen = True)
@@ -42,21 +40,3 @@ class ToolDefinition:
     description:str
     parameters:dict[str, Any]
     handler:Callable[[dict[str, Any]], ToolExecutionResult]
-
-    def to_openai_tool(self) -> dict[str, Any]:
-        """Convert the tool definition into an OpenAI API schema.
-
-        Args:
-            None
-
-        Returns:
-            dict[str, Any]: OpenAI-compatible function tool payload.
-        """
-
-        return {
-            "type": "function",
-            "name": self.name,
-            "description": self.description,
-            "parameters": self.parameters,
-            "strict": True
-        }

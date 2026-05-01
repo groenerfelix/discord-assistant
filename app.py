@@ -15,7 +15,7 @@ def main():
     if not config.discord_token:
         raise RuntimeError("DISCORD_2 or DISCORD is required")
     if not config.agent_llm.api_key:
-        raise RuntimeError("LLM_API_KEY or OPENAI is required for the core agent")
+        raise RuntimeError("OPENAI_API_KEY, LLM_API_KEY, or OPENAI is required for the core agent")
 
     agent = MarkdownAgent(config = config)
     client = AssistantDiscordClient(

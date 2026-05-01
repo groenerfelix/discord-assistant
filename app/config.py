@@ -26,7 +26,7 @@ class LlmClientConfig:
     Args:
         api_key: API key used for requests.
         model: Model name used for requests.
-        base_url: Optional base URL for OpenAI-compatible providers.
+        base_url: Optional OpenAI-compatible base URL.
 
     Returns:
         LlmClientConfig: Immutable LLM client configuration.
@@ -46,7 +46,6 @@ class AppConfig:
         discord_token: Bot token for Discord.
         guild_id: Discord guild id used for server-side bot channels.
         agent_llm: Core agent LLM configuration loaded from environment variables.
-        openai_api_key: OpenAI API key reserved for OpenAI-native tools.
         max_agent_steps: Maximum number of tool iterations per workflow run.
 
     Returns:
@@ -77,9 +76,12 @@ def load_config() -> AppConfig:
         discord_token = os.getenv("DISCORD_2", os.getenv("DISCORD", "")),
         guild_id = int(os.getenv("GUILD_ID", "0")),
         agent_llm = LlmClientConfig(
-            api_key = os.getenv("LLM_API_KEY", os.getenv("OPENAI", "")),
+            api_key = os.getenv(
+                "OPENAI_API_KEY",
+                os.getenv("LLM_API_KEY", os.getenv("OPENAI", ""))
+            ),
             model = os.getenv("LLM_MODEL", "gpt-5-mini"),
-            base_url = os.getenv("LLM_API_BASE_URL", None)
+            base_url = os.getenv("OPENAI_BASE_URL", os.getenv("LLM_API_BASE_URL", None))
         ),
         max_agent_steps = int(os.getenv("AGENT_MAX_STEPS", "8"))
     )

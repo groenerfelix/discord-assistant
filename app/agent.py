@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields as dataclass_fields, is_dataclass
 from datetime import datetime, timedelta, timezone
 import json
 import logging
@@ -12,19 +12,30 @@ from pathlib import Path
 import threading
 from typing import TYPE_CHECKING, Any
 
-from app.config import AppConfig, LlmClientConfig
+from agents import (
+    Agent,
+    RunConfig,
+    Runner,
+    WebSearchTool,
+    set_default_openai_client,
+    set_default_openai_key
+)
+from openai import AsyncOpenAI
+
+from app.agent_runtime import AgentRuntimeContext
+from app.config import AppConfig
 from app.discord_utils import DiscordChannelCategory, DiscordMessageStatus
-from app.llm_client import LlmClient
 from app.markdown_loader import load_optional_markdown
 from app.tool_registry import ToolRegistry
-from tools.markdown_tools import list_markdown_files
-
 from app.util import get_datetime_string
+from tools.markdown_tools import list_markdown_files
 
 if TYPE_CHECKING:
     from app.discord_bot import AssistantDiscordClient
 
 logger = logging.getLogger(__name__)
+
+MAX_RETAINED_HISTORY_ITEMS = 60
 
 
 @dataclass(frozen = True)
@@ -33,7 +44,7 @@ class AgentResponse:
 
     Args:
         message: Final message to send back to the user.
-        steps_used: Number of tool loop iterations that were consumed.
+        steps_used: Number of model turns that were consumed.
 
     Returns:
         AgentResponse: Final workflow outcome.
@@ -75,11 +86,11 @@ class ActiveWorkflowState:
 
     Args:
         channel_id: Active Discord channel id.
-        instructions: Responses API system instructions for the workflow.
-        messages: Full Responses conversation state.
+        instructions: Agents SDK system instructions for the workflow.
+        messages: Full conversation state passed back to the SDK.
         participating_messages: Messages already inserted into conversation state.
         sent_messages: User-facing Discord messages sent during the run.
-        steps_used: Number of LLM turns consumed.
+        steps_used: Number of model turns consumed.
         last_activity_at: Most recent workflow activity timestamp.
 
     Returns:
@@ -100,7 +111,7 @@ class WorkflowStepResult:
     """Result of executing a single workflow step.
 
     Args:
-        status: One of continue, terminal, or error.
+        status: One of terminal or error.
         termination_reason: Optional reason string for terminal or error states.
         final_message: Final user-facing message for terminal states.
         error_message: Human-readable error summary for failure states.
@@ -116,16 +127,14 @@ class WorkflowStepResult:
 
 
 class MarkdownAgent:
-    """Minimal agent that is configured by markdown assets."""
+    """Markdown-configured Discord assistant backed by the OpenAI Agents SDK."""
 
     def __init__(self, config:AppConfig):
         self._config = config
-        self.llm_agent = LlmClient(
-            config = config.agent_llm,
-            name = "agent"
-        )
+        self._configure_openai_sdk()
         self._tools = ToolRegistry(
             project_root = config.project_root,
+            llm_config = config.agent_llm,
             markdown_publisher = self._publish_markdown_update
         )
         self._discord_client:AssistantDiscordClient | None = None
@@ -133,6 +142,33 @@ class MarkdownAgent:
         self._queued_messages:deque[QueuedDiscordMessage] = deque()
         self._active_workflow:ActiveWorkflowState | None = None
         self._worker_thread:threading.Thread | None = None
+
+    def _configure_openai_sdk(self) -> None:
+        """Configure the Agents SDK with the configured OpenAI client.
+
+        Args:
+            None
+
+        Returns:
+            None
+        """
+
+        if self._config.agent_llm.base_url:
+            logger.info(
+                "Configuring Agents SDK with custom OpenAI base_url=%s",
+                self._config.agent_llm.base_url
+            )
+            set_default_openai_client(
+                AsyncOpenAI(
+                    api_key = self._config.agent_llm.api_key,
+                    base_url = self._config.agent_llm.base_url
+                ),
+                use_for_tracing = False
+            )
+            return
+
+        logger.info("Configuring Agents SDK with default OpenAI key")
+        set_default_openai_key(self._config.agent_llm.api_key)
 
     def _publish_markdown_update(
         self,
@@ -231,28 +267,20 @@ class MarkdownAgent:
             try:
                 workflow_state = self._start_workflow(initial_message = queued_message)
                 self._active_workflow = workflow_state
+                self._insert_pending_same_channel_messages(workflow_state = workflow_state)
+                step_result = self._run_single_step(workflow_state = workflow_state)
 
-                while True:
-                    self._insert_pending_same_channel_messages(workflow_state = workflow_state)
-                    step_result = self._run_single_step(workflow_state = workflow_state)
-
-                    if step_result.status == "continue":
-                        continue
-
-                    if step_result.status == "terminal":
-                        self._finish_workflow_success(
-                            workflow_state = workflow_state,
-                            step_result = step_result
-                        )
-                        break
-
+                if step_result.status == "terminal":
+                    self._finish_workflow_success(
+                        workflow_state = workflow_state,
+                        step_result = step_result
+                    )
+                else:
                     self._finish_workflow_error(
                         workflow_state = workflow_state,
                         step_result = step_result
                     )
-                    break
             except Exception as exc:
-                # error_message = "Unhandled workflow error: %s" % exc
                 logger.exception("Unhandled workflow error")
                 self._log_raw_execution(
                     payload = {
@@ -266,9 +294,9 @@ class MarkdownAgent:
                     self._finish_workflow_error(
                         workflow_state = workflow_state,
                         step_result = WorkflowStepResult(
-                            status = DiscordMessageStatus.ERROR,
+                            status = "error",
                             termination_reason = "unhandled_exception",
-                            error_message = "Unhandled worklfow error"
+                            error_message = "Unhandled workflow error"
                         )
                     )
                 else:
@@ -310,7 +338,7 @@ class MarkdownAgent:
             initial_message: First message that starts the workflow.
 
         Returns:
-            ActiveWorkflowState: Newly initialized workflow state.
+            ActiveWorkflowState: Newly initialized or retained workflow state.
         """
 
         logger.info(
@@ -355,12 +383,10 @@ class MarkdownAgent:
             participating_messages = [initial_message],
             last_activity_at = self._normalize_datetime(value = initial_message.created_at)
         )
-        initial_messages = self._build_initial_messages(
-            instructions = workflow_state.instructions,
+        for message in self._build_initial_messages(
             user_message = initial_message.content,
             recent_channel_history = initial_message.recent_channel_history
-        )
-        for message in initial_messages:
+        ):
             self._append_message_to_history(
                 workflow_state = workflow_state,
                 message = message
@@ -383,7 +409,6 @@ class MarkdownAgent:
             if not self._queued_messages:
                 return
 
-            # Messages arriving during generation are merged before the next step, not mid-request.
             remaining_messages:deque[QueuedDiscordMessage] = deque()
             while self._queued_messages:
                 queued_message = self._queued_messages.popleft()
@@ -420,150 +445,167 @@ class MarkdownAgent:
             )
 
     def _run_single_step(self, workflow_state:ActiveWorkflowState) -> WorkflowStepResult:
-        """Execute one LLM/tool step for the active workflow.
+        """Execute one complete Agents SDK run for the active workflow.
 
         Args:
             workflow_state: Current active workflow state.
 
         Returns:
-            WorkflowStepResult: Structured status for this step.
+            WorkflowStepResult: Structured terminal status for this SDK run.
         """
 
-        if workflow_state.steps_used >= self._config.max_agent_steps:
-            logger.warning("Workflow hit hard step limit")
-            limit_message = (
-                "I hit the workflow step limit before I could finish safely. "
-                "Please send a shorter follow-up or refine the request."
-            )
-            self._send_discord_message(
-                channel_id = workflow_state.channel_id,
-                content = limit_message
-            )
-            workflow_state.sent_messages.append(limit_message)
-            return WorkflowStepResult(
-                status = "terminal",
-                termination_reason = "step_limit",
-                final_message = limit_message
-            )
-
-        step_number = workflow_state.steps_used + 1
         logger.info(
-            "Running step %s/%s",
-            step_number,
-            self._config.max_agent_steps
+            "Running Agents SDK workflow max_turns=%s history_items=%s",
+            self._config.max_agent_steps,
+            len(workflow_state.messages)
         )
-
-        tool_response = self.llm_agent.create_tool_response(
-            instructions = workflow_state.instructions,
-            input_items = workflow_state.messages,
-            tools = self._tools.get_openai_tools()
+        runtime_context = AgentRuntimeContext(
+            channel_id = workflow_state.channel_id,
+            send_channel_message = self._send_discord_message,
+            sent_messages = workflow_state.sent_messages
         )
-        workflow_state.steps_used += 1
-        workflow_state.last_activity_at = datetime.now(timezone.utc)
-
-        for output_item in tool_response.output_items:
-            self._append_message_to_history(
-                workflow_state = workflow_state,
-                message = output_item
+        agent = self._build_agent(instructions = workflow_state.instructions)
+        result = Runner.run_sync(
+            agent,
+            workflow_state.messages,
+            context = runtime_context,
+            max_turns = self._config.max_agent_steps,
+            run_config = RunConfig(
+                workflow_name = "discord-assistant",
+                group_id = str(workflow_state.channel_id),
+                trace_include_sensitive_data = False
             )
+        )
+        workflow_state.steps_used += max(1, len(result.raw_responses))
+        workflow_state.last_activity_at = datetime.now(timezone.utc)
+        result.release_agents()
 
-        self._log_raw_execution(
-            payload = {
-                "type": "response",
-                "response_id": tool_response.response_id,
-                "output": tool_response.output_items
+        final_message = str(result.final_output or "").strip()
+        if not final_message:
+            logger.warning("Agent returned no final output")
+            final_message = "I finished, but I did not produce a final response."
+
+        success_log = self._build_agent_success_log(
+            workflow_state = workflow_state,
+            runtime_context = runtime_context,
+            model_turns = len(result.raw_responses),
+            final_message = final_message
+        )
+        if success_log is not None:
+            self._log_raw_execution(payload = success_log)
+
+        workflow_state.messages = self._build_retained_messages(
+            existing_messages = workflow_state.messages,
+            assistant_message = final_message
+        )
+
+        logger.info("Sending final agent output to Discord")
+        self._send_discord_message(
+            channel_id = workflow_state.channel_id,
+            content = final_message
+        )
+        workflow_state.sent_messages.append(final_message)
+
+        return WorkflowStepResult(
+            status = "terminal",
+            termination_reason = "agent_final_output",
+            final_message = final_message
+        )
+
+    def _build_agent_success_log(
+        self,
+        workflow_state:ActiveWorkflowState,
+        runtime_context:AgentRuntimeContext,
+        model_turns:int,
+        final_message:str
+    ) -> dict[str, Any] | None:
+        """Build a compact Discord log payload for a successful agent run.
+
+        Args:
+            workflow_state: Workflow state for the completed run.
+            runtime_context: Runtime context containing tool execution summaries.
+            model_turns: Number of model responses used by the SDK run.
+            final_message: Final assistant message, used only for length metadata.
+
+        Returns:
+            dict[str, Any] | None: Minimal success log payload, or None when nothing notable ran.
+        """
+
+        if not runtime_context.tool_events:
+            return None
+
+        return {
+            "type": "agent_run",
+            "status": "success",
+            "channel_id": workflow_state.channel_id,
+            "model": self._config.agent_llm.model,
+            "model_turns": model_turns,
+            "tools": runtime_context.tool_events,
+            "final_message_chars": len(final_message)
+        }
+
+    def _build_agent(self, instructions:str) -> Agent[AgentRuntimeContext]:
+        """Build the SDK agent for one workflow run.
+
+        Args:
+            instructions: System instructions assembled from markdown assets.
+
+        Returns:
+            Agent[AgentRuntimeContext]: Configured main assistant agent.
+        """
+
+        return Agent[AgentRuntimeContext](
+            name = "Markdown Discord Assistant",
+            model = self._config.agent_llm.model,
+            instructions = instructions,
+            tools = [
+                *self._tools.get_agent_tools(),
+                WebSearchTool(search_context_size = "medium")
+            ]
+        )
+
+    def _build_retained_messages(
+        self,
+        existing_messages:list[dict[str, Any]],
+        assistant_message:str
+    ) -> list[dict[str, Any]]:
+        """Build safe history for the next Discord turn.
+
+        Args:
+            existing_messages: Current app-managed user/assistant message history.
+            assistant_message: Final assistant response from the completed SDK run.
+
+        Returns:
+            list[dict[str, Any]]: Message-only history without tool or reasoning items.
+        """
+
+        retained_messages = [
+            message
+            for message in existing_messages
+            if self._is_plain_message_item(message = message)
+        ]
+        retained_messages.append(
+            {
+                "role": "assistant",
+                "content": assistant_message
             }
         )
+        return self._trim_history_items(messages = retained_messages)
 
-        if not tool_response.function_calls:
-            final_message = tool_response.text_output.strip()
-            if final_message:
-                logger.info("Workflow completed via assistant content fallback")
-                self._send_discord_message(
-                    channel_id = workflow_state.channel_id,
-                    content = final_message
-                )
-                workflow_state.sent_messages.append(final_message)
-                return WorkflowStepResult(
-                    status = "terminal",
-                    termination_reason = "assistant_content",
-                    final_message = final_message
-                )
+    def _is_plain_message_item(self, message:dict[str, Any]) -> bool:
+        """Return whether an item is safe to retain as next-run input.
 
-            logger.warning("Assistant returned neither tool call nor content")
-            self._append_message_to_history(
-                workflow_state = workflow_state,
-                message = self._build_user_input_item(
-                    content = "You must either call a tool or provide a final response."
-                )
-            )
-            return WorkflowStepResult(status = "continue")
+        Args:
+            message: Candidate history item.
 
-        terminal_tool_name:str | None = None
-        terminal_final_message:str = ""
+        Returns:
+            bool: True when the item is a plain user or assistant message.
+        """
 
-        for function_call in tool_response.function_calls:
-            try:
-                executed_call = self._tools.execute_tool_call(
-                    tool_name = function_call.name,
-                    arguments_json = function_call.arguments_json
-                )
-                tool_output = executed_call.result.output
-            except Exception as exc:
-                logger.exception("Tool execution error")
-                tool_output = "Tool error: %s" % exc
-                self._log_raw_execution(
-                    payload = {
-                        "type": "exception",
-                        "source": "tool",
-                        "tool_name": function_call.name,
-                        "tool_call_id": function_call.call_id,
-                        "error": str(exc)
-                    }
-                )
-                self._append_message_to_history(
-                    workflow_state = workflow_state,
-                    message = self._build_function_call_output_item(
-                        call_id = function_call.call_id,
-                        output = tool_output
-                    )
-                )
-                continue
+        if not isinstance(message, dict):
+            return False
 
-            if executed_call.result.outbound_message:
-                logger.info(
-                    "Sending outbound Discord message from tool tool_name=%s",
-                    executed_call.tool_name
-                )
-                self._send_discord_message(
-                    channel_id = workflow_state.channel_id,
-                    content = executed_call.result.outbound_message
-                )
-                workflow_state.sent_messages.append(executed_call.result.outbound_message)
-
-            tool_response_message = self._build_function_call_output_item(
-                call_id = function_call.call_id,
-                output = tool_output
-            )
-            self._append_message_to_history(
-                workflow_state = workflow_state,
-                message = tool_response_message
-            )
-            self._log_raw_execution(payload = tool_response_message)
-
-            if executed_call.result.is_terminal and terminal_tool_name is None:
-                terminal_tool_name = executed_call.tool_name
-                terminal_final_message = executed_call.result.outbound_message or tool_output
-
-        if terminal_tool_name is not None:
-            logger.info("Workflow completed via tool:%s", terminal_tool_name)
-            return WorkflowStepResult(
-                status = "terminal",
-                termination_reason = f"tool:{terminal_tool_name}",
-                final_message = terminal_final_message
-            )
-
-        return WorkflowStepResult(status = "continue")
+        return message.get("role") in {"user", "assistant"}
 
     def _finish_workflow_success(
         self,
@@ -715,9 +757,25 @@ class MarkdownAgent:
             logger.warning("Discord client bridge is unavailable for logs")
             return
 
-        self._discord_client.send_logs_message_threadsafe(
-            content = json.dumps(payload, indent = 2, ensure_ascii = False)
-        )
+        try:
+            serialized_payload = json.dumps(
+                self._json_safe(value = payload),
+                indent = 2,
+                ensure_ascii = False
+            )
+        except Exception as exc:
+            logger.exception("Failed to serialize raw execution payload")
+            serialized_payload = json.dumps(
+                {
+                    "type": "log_serialization_error",
+                    "error": str(exc),
+                    "payload_type": type(payload).__name__
+                },
+                indent = 2,
+                ensure_ascii = False
+            )
+
+        self._discord_client.send_logs_message_threadsafe(content = serialized_payload)
 
     def _build_log_final_message(
         self,
@@ -744,28 +802,26 @@ class MarkdownAgent:
 
     def _build_initial_messages(
         self,
-        instructions:str,
         user_message:str,
         recent_channel_history:str = ""
     ) -> list[dict[str, Any]]:
-        """Construct the initial Responses input items for the agent.
+        """Construct the initial SDK input items for the agent.
 
         Args:
-            instructions: Full prompt content stored in local context and sent as API instructions.
             user_message: Raw DM content from the user.
             recent_channel_history: Optional formatted transcript from the same Discord channel.
 
         Returns:
-            list[dict[str, Any]]: Initial input items for the model.
+            list[dict[str, Any]]: Initial user input items for the model.
         """
 
-        user_content = self._build_user_message(
-            user_message = user_message,
-            recent_channel_history = recent_channel_history
-        )
         return [
-            self._build_system_input_item(content = instructions),
-            self._build_user_input_item(content = user_content)
+            self._build_user_input_item(
+                content = self._build_user_message(
+                    user_message = user_message,
+                    recent_channel_history = recent_channel_history
+                )
+            )
         ]
 
     def _should_reset_messages_for_new_workflow(
@@ -820,32 +876,39 @@ class MarkdownAgent:
         workflow_state:ActiveWorkflowState,
         message:dict[str, Any]
     ) -> None:
-        """Append one input item and trim the oldest retained history entry if needed.
+        """Append one input item and trim retained history if needed.
 
         Args:
             workflow_state: Workflow state whose conversation should be updated.
-            message: Responses input item payload to append.
+            message: SDK input item payload to append.
 
         Returns:
             None
         """
 
         workflow_state.messages.append(message)
-        max_history_messages = self._config.max_agent_steps
-        while len(workflow_state.messages) > max_history_messages:
-            removal_index = 0
-            if self._history_has_persistent_prompt(messages = workflow_state.messages):
-                removal_index = 1
+        workflow_state.messages = self._trim_history_items(messages = workflow_state.messages)
 
-            if removal_index >= len(workflow_state.messages):
-                break
+    def _trim_history_items(self, messages:list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Trim retained conversation history to a bounded size.
 
-            removed_message = workflow_state.messages.pop(removal_index)
-            logger.debug(
-                "Trimmed oldest conversation history message label=%s max_messages=%s",
-                self._get_history_item_label(message = removed_message),
-                max_history_messages
-            )
+        Args:
+            messages: Current retained conversation history.
+
+        Returns:
+            list[dict[str, Any]]: Trimmed conversation history.
+        """
+
+        if len(messages) <= MAX_RETAINED_HISTORY_ITEMS:
+            return messages
+
+        trimmed_messages = messages[-MAX_RETAINED_HISTORY_ITEMS:]
+        logger.debug(
+            "Trimmed conversation history from %s to %s items",
+            len(messages),
+            len(trimmed_messages)
+        )
+        return trimmed_messages
 
     def _build_user_message(
         self,
@@ -940,7 +1003,7 @@ class MarkdownAgent:
             directory: Directory to scan for markdown files.
 
         Returns:
-            str: Newline-separated project-relative markdown file paths.
+            str: Newline-separated project-relative markdown paths.
         """
 
         logger.debug("Building prompt file list for: %s", directory)
@@ -953,29 +1016,14 @@ class MarkdownAgent:
 
         return "\n".join(available_files)
 
-    def _build_system_input_item(self, content:str) -> dict[str, Any]:
-        """Build one persistent system prompt item for local Responses context.
-
-        Args:
-            content: System prompt text.
-
-        Returns:
-            dict[str, Any]: Persistent system context item.
-        """
-
-        return {
-            "role": "system",
-            "content": content
-        }
-
     def _build_user_input_item(self, content:str) -> dict[str, Any]:
-        """Build one user input item for the Responses API.
+        """Build one user input item for the Agents SDK.
 
         Args:
             content: User-visible text payload.
 
         Returns:
-            dict[str, Any]: Responses user input item.
+            dict[str, Any]: User input item.
         """
 
         return {
@@ -983,49 +1031,20 @@ class MarkdownAgent:
             "content": content
         }
 
-    def _history_has_persistent_prompt(self, messages:list[dict[str, Any]]) -> bool:
-        """Return whether the retained history starts with the persistent prompt item.
-
-        Args:
-            messages: Current retained history.
-
-        Returns:
-            bool: True when the first item is the stored prompt context.
-        """
-
-        if not messages:
-            return False
-
-        return messages[0].get("role") == "system"
-
-    def _build_function_call_output_item(self, call_id:str, output:str) -> dict[str, Any]:
-        """Build one function-call output item for the Responses API.
-
-        Args:
-            call_id: Responses function call id.
-            output: Tool output string.
-
-        Returns:
-            dict[str, Any]: Responses function-call output item.
-        """
-
-        return {
-            "type": "function_call_output",
-            "call_id": call_id,
-            "output": output
-        }
-
-    def _get_history_item_label(self, message:dict[str, Any]) -> str:
+    def _get_history_item_label(self, message:Any) -> str:
         """Return a compact label for one retained history item.
 
         Args:
-            message: Responses history item.
+            message: Retained history item.
 
         Returns:
-            str: Role or type label for logs.
+            str: Role, type, or class-name label for logs.
         """
 
-        return str(message.get("role") or message.get("type") or "unknown")
+        if isinstance(message, dict):
+            return str(message.get("role") or message.get("type") or "unknown")
+
+        return type(message).__name__
 
     def _write_interaction_log(
         self,
@@ -1040,7 +1059,7 @@ class MarkdownAgent:
             messages: Full conversation state accumulated during the workflow.
             final_message: Final user-facing message for the interaction.
             termination_reason: Why the workflow ended.
-            steps_used: Number of steps consumed before termination.
+            steps_used: Number of model turns consumed.
 
         Returns:
             None
@@ -1056,7 +1075,7 @@ class MarkdownAgent:
             "",
             f"- Timestamp: {datetime.now().isoformat()}",
             f"- Termination reason: {termination_reason}",
-            f"- Steps used: {steps_used}",
+            f"- Model turns used: {steps_used}",
             "",
             "## Final Message",
             "",
@@ -1073,7 +1092,11 @@ class MarkdownAgent:
                     f"### {index}. {role}",
                     "",
                     "```json",
-                    json.dumps(message, indent = 2, ensure_ascii = False),
+                    json.dumps(
+                        self._json_safe(value = message),
+                        indent = 2,
+                        ensure_ascii = False
+                    ),
                     "```",
                     ""
                 ]
@@ -1081,3 +1104,68 @@ class MarkdownAgent:
 
         log_path.write_text("\n".join(log_lines), encoding = "utf-8")
         logger.info("Wrote interaction log to %s", log_path)
+
+    def _json_safe(self, value:Any, seen:set[int] | None = None) -> Any:
+        """Convert SDK objects into JSON-serializable values.
+
+        Args:
+            value: Arbitrary value returned by the SDK or local runtime.
+            seen: Object ids already traversed during this conversion.
+
+        Returns:
+            Any: JSON-serializable representation.
+        """
+
+        if value is None or isinstance(value, (str, int, float, bool)):
+            return value
+
+        if seen is None:
+            seen = set()
+
+        value_id = id(value)
+        if value_id in seen:
+            return repr(value)
+        seen.add(value_id)
+
+        if isinstance(value, Path):
+            return str(value)
+
+        if callable(value):
+            return repr(value)
+
+        if isinstance(value, dict):
+            return {
+                str(key): self._json_safe(value = item, seen = seen)
+                for key, item in value.items()
+            }
+
+        if isinstance(value, (list, tuple, set)):
+            return [
+                self._json_safe(value = item, seen = seen)
+                for item in value
+            ]
+
+        model_dump = getattr(value, "model_dump", None)
+        if callable(model_dump):
+            try:
+                return self._json_safe(value = model_dump(mode = "python"), seen = seen)
+            except Exception as exc:
+                logger.debug(
+                    "Falling back from model_dump during JSON serialization type=%s error=%s",
+                    type(value).__name__,
+                    exc
+                )
+
+        if is_dataclass(value) and not isinstance(value, type):
+            return {
+                dataclass_field.name: self._json_safe(
+                    value = getattr(value, dataclass_field.name),
+                    seen = seen
+                )
+                for dataclass_field in dataclass_fields(value)
+            }
+
+        if hasattr(value, "__dict__"):
+            return self._json_safe(value = vars(value), seen = seen)
+
+        return str(value)

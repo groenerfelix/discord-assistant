@@ -32,10 +32,10 @@ Current capabilities include:
 ### Runtime code
 
 - `app.py`: main entrypoint that loads config, builds the agent, and starts the Discord client.
-- `app/agent.py`: the core workflow loop, queue handling, prompt assembly, tool execution, and transcript logging.
+- `app/agent.py`: the core workflow loop, queue handling, prompt assembly, Agents SDK execution, and transcript logging.
 - `app/discord_bot.py`: Discord client, DM intake, reactions, channel creation, history gathering, and scheduled jobs.
-- `app/llm_client.py`: thin wrapper around the OpenAI-compatible Responses API.
-- `app/tool_registry.py`: registers tools and dispatches model-emitted tool calls.
+- `app/content_processor.py`: reusable instruction-driven content processor used by model-backed tools.
+- `app/tool_registry.py`: registers local tools and wraps them as OpenAI Agents SDK function tools.
 - `app/config.py`: environment loading and runtime configuration.
 - `app/discord_utils.py`, `app/markdown_loader.py`, `app/util.py`: shared helpers.
 
@@ -53,8 +53,8 @@ Current examples in the repo include calendar and to-do workflows, plus markdown
 
 - `tools/markdown_tools.py`: constrained read/write access for markdown workflows, data, and memories.
 - `tools/messaging_tools.py`: lets the model send Discord replies and optionally end the workflow.
-- `tools/web_search.py`: OpenAI-powered web search.
-- `tools/email_tools.py`: Email integration to retrieve the last 24hr inbox.
+- Hosted web search is attached directly to the main OpenAI Agents SDK agent.
+- `tools/email_tools.py`: Email integration to retrieve the last 24hr inbox and process it through explicit instructions supplied by the main agent.
 
 
 ## Setup
@@ -82,12 +82,13 @@ Discord integration
 - `GUILD_ID`: Discord server ID used for mirrored channels.
 
 LLM agent
-- `OPENAI`: OpenAI API key for the dedicated web search tool.
-- `LLM_API_KEY` API key for the main agent model if not OpenAI.
-- `LLM_API_BASE_URL`: base URL for an OpenAI-compatible provider if not OpenAI.
+- `OPENAI_API_KEY`: OpenAI API key for the main agent and model-backed tools. `LLM_API_KEY` or `OPENAI` are accepted as fallbacks.
+- `OPENAI_BASE_URL` or `LLM_API_BASE_URL`: optional base URL for an OpenAI-compatible endpoint.
 - `LLM_MODEL`: model name for the main agent.
 - `AGENT_MAX_STEPS`: hard limit for workflow turns.
 - `TIMEZONE`: timezone string used in the generated prompt context.
+
+Hosted web search is attached through the OpenAI Agents SDK and requires a model/provider path that supports the hosted `WebSearchTool`.
 
 Zoho email integration 
 - `ZOHO_ID` and `ZOHO_TOKEN` of the application, 

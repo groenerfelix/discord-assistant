@@ -1,4 +1,4 @@
-"""Terminal messaging tool implementations."""
+"""Messaging tool implementations."""
 
 from __future__ import annotations
 
@@ -15,17 +15,14 @@ SEND_MESSAGE_PARAMETERS = {
     "properties": {
         "message": {
             "type": "string",
-            "description": "User-facing Discord message, formatted in correct markdown."
-        },
-        "is_terminal": {
-            "type": "boolean",
-            "description": "Whether sending this message should end the current workflow.",
-            "default": True
+            "description": (
+                "User-facing Discord message to send before the final response. "
+                "Use Discord-flavored markdown."
+            )
         }
     },
     "required": [
-        "message",
-        "is_terminal"
+        "message"
     ],
     "additionalProperties": False
 }
@@ -41,23 +38,25 @@ def build_messaging_tool_definitions() -> list[ToolDefinition]:
         list[ToolDefinition]: Messaging tool definitions.
     """
 
-    def send_message(arguments:dict) -> ToolExecutionResult:
+    def send_message(arguments:dict[str, object]) -> ToolExecutionResult:
         message = str(arguments["message"])
-        is_terminal = bool(arguments.get("is_terminal", True))
-        logger.info("Sending Discord message. is_terminal=%s", is_terminal)
+        logger.info("Sending intermediate Discord message")
         return ToolExecutionResult(
-            output = "Successfully sent Discord message",
-            outbound_message = message,
-            is_terminal = is_terminal
+            output = (
+                "Successfully sent Discord message. Continue working and provide your "
+                "final response normally; it will be sent to Discord automatically."
+            ),
+            outbound_message = message
         )
 
     return [
         ToolDefinition(
             name = "send_message",
             description = (
-                "Send a user-facing Discord reply. "
-                "By default this ends the workflow, but you may set is_terminal to false "
-                "to continue working after sending the message."
+                "Send a user-facing Discord message before the final response. Use this "
+                "when the user should receive an update, clarification, or partial result "
+                "while you continue working. Do not use this for your final answer; final "
+                "output is sent to Discord automatically."
             ),
             parameters = SEND_MESSAGE_PARAMETERS,
             handler = send_message
